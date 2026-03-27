@@ -1,0 +1,102 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 97%;
+    --foreground: 210 20% 16%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 210 20% 16%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 210 20% 16%;
+
+    --primary: 142 64% 36%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 142 30% 94%;
+    --secondary-foreground: 142 64% 26%;
+
+    --muted: 210 20% 96%;
+    --muted-foreground: 210 10% 50%;
+
+    --accent: 142 30% 94%;
+    --accent-foreground: 142 64% 26%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 210 20% 91%;
+    --input: 210 20% 91%;
+    --ring: 142 64% 36%;
+
+    --radius: 0.75rem;
+
+    --sidebar-bg: 210 25% 14%;
+    --sidebar-fg: 210 15% 85%;
+    --sidebar-active: 142 64% 42%;
+    --sidebar-hover: 210 20% 20%;
+
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 100%;
+
+    --success: 142 64% 36%;
+    --success-foreground: 0 0% 100%;
+
+    --whatsapp-bubble: 142 40% 92%;
+    --whatsapp-bubble-fg: 210 20% 16%;
+
+    --shadow-soft: 0 2px 12px -2px hsl(210 20% 16% / 0.06);
+    --shadow-card: 0 4px 24px -4px hsl(210 20% 16% / 0.08);
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+  }
+}
+
+@layer components {
+  .drop-zone {
+    @apply border-2 border-dashed border-primary/30 bg-secondary/50 rounded-xl p-10 text-center cursor-pointer transition-all duration-200;
+  }
+  .drop-zone:hover {
+    @apply border-primary/60 bg-secondary;
+  }
+  .whatsapp-bubble {
+    @apply bg-whatsapp-bubble text-whatsapp-bubble-fg rounded-2xl rounded-tl-sm px-4 py-3 max-w-xs shadow-soft;
+  }
+  .stepper-dot {
+    @apply w-9 h-9 rounded-full flex items-center justify-center text-sm font-semibold transition-all duration-300;
+  }
+  .stepper-dot-active {
+    @apply bg-primary text-primary-foreground shadow-md;
+  }
+  .stepper-dot-done {
+    @apply bg-primary/20 text-primary;
+  }
+  .stepper-dot-pending {
+    @apply bg-muted text-muted-foreground;
+  }
+  .stepper-line {
+    @apply h-0.5 flex-1 mx-2 rounded-full transition-all duration-300;
+  }
+}
+
+.tiptap p.is-editor-empty:first-child::before {
+  color: hsl(var(--muted-foreground) / 0.7);
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
