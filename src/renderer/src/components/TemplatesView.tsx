@@ -25,6 +25,18 @@ interface Props {
   setTemplates: React.Dispatch<React.SetStateAction<Template[]>>;
 }
 
+const toTemplate = (template: {
+  id: string;
+  title: string;
+  text: string;
+  doc?: unknown;
+}): Template => ({
+  id: template.id,
+  title: template.title,
+  text: template.text,
+  doc: template.doc as JSONContent | undefined,
+});
+
 export default function TemplatesView({ templates, setTemplates }: Props) {
   const { toast } = useToast();
   const [editOpen, setEditOpen] = useState(false);
@@ -57,6 +69,34 @@ export default function TemplatesView({ templates, setTemplates }: Props) {
     },
   });
 
+  useEffect(() => {
+    let isMounted = true;
+
+    const loadTemplates = async () => {
+      try {
+        const templatesFromDb = await window.api.getTemplates();
+        if (!isMounted) return;
+
+        setTemplates(templatesFromDb.map(toTemplate));
+      } catch (error) {
+        console.error("[templates] Falha ao carregar templates:", error);
+        if (!isMounted) return;
+
+        toast({
+          title: "Erro ao carregar modelos",
+          description: "Não foi possível buscar os modelos salvos no banco local.",
+          variant: "destructive",
+        });
+      }
+    };
+
+    void loadTemplates();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [setTemplates, toast]);
+
   const openNew = () => {
     setEditId(null);
     setEditTitle("");
@@ -82,32 +122,59 @@ export default function TemplatesView({ templates, setTemplates }: Props) {
     return docToPlainText(editor.getJSON()).trim();
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!editTitle.trim()) return;
     const plainText = getEditorPlainText();
     if (!plainText) return;
     const doc = editor?.getJSON();
+    const templateToSave = {
+      id: editId ?? crypto.randomUUID(),
+      title: editTitle.trim(),
+      text: plainText,
+      doc,
+    };
 
-    if (editId) {
-      setTemplates((prev) =>
-        prev.map((t) => (t.id === editId ? { ...t, title: editTitle, text: plainText, doc } : t))
-      );
-      toast({ title: "Modelo atualizado" });
-    } else {
-      setTemplates((prev) => [
-        ...prev,
-        { id: crypto.randomUUID(), title: editTitle, text: plainText, doc },
-      ]);
-      toast({ title: "Modelo criado com sucesso" });
+    try {
+      const savedTemplate = await window.api.saveTemplate(templateToSave);
+      const normalizedTemplate = toTemplate(savedTemplate);
+
+      if (editId) {
+        setTemplates((prev) =>
+          prev.map((t) => (t.id === editId ? normalizedTemplate : t))
+        );
+        toast({ title: "Modelo atualizado" });
+      } else {
+        setTemplates((prev) => [normalizedTemplate, ...prev]);
+        toast({ title: "Modelo criado com sucesso" });
+      }
+
+      setEditOpen(false);
+    } catch (error) {
+      console.error("[templates] Falha ao salvar template:", error);
+      toast({
+        title: "Erro ao salvar modelo",
+        description: "Não foi possível salvar o modelo no banco local.",
+        variant: "destructive",
+      });
     }
-    setEditOpen(false);
   };
 
-  const confirmDelete = () => {
+  const confirmDelete = async () => {
     if (!deleteId) return;
-    setTemplates((prev) => prev.filter((t) => t.id !== deleteId));
-    toast({ title: "Modelo excluído" });
-    setDeleteId(null);
+
+    try {
+      await window.api.deleteTemplate(deleteId);
+      setTemplates((prev) => prev.filter((t) => t.id !== deleteId));
+      toast({ title: "Modelo excluído" });
+      setDeleteId(null);
+    } catch (error) {
+      console.error("[templates] Falha ao excluir template:", error);
+      toast({
+        title: "Erro ao excluir modelo",
+        description: "Não foi possível excluir o modelo no banco local.",
+        variant: "destructive",
+      });
+    }
   };
 
   const insertVariable = () => {

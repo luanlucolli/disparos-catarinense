@@ -16,6 +16,7 @@ import {
   RefreshCw, Pause, Play, XCircle, CheckCircle2, XOctagon, Clock,
   Users, ArrowRight,
 } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
 
 export type CampaignStatus = "Concluído" | "Pausado" | "Falhou" | "Em andamento";
 
@@ -32,16 +33,55 @@ export interface Campaign {
   endTime?: string;
 }
 
+type CampaignDbRecord = Awaited<ReturnType<Window["api"]["getCampaigns"]>>[number];
+type CampaignContactDbRecord = Awaited<ReturnType<Window["api"]["getCampaignContacts"]>>[number];
+
 const names = ["Maria", "João", "Ana", "Carlos", "Paula", "Roberto", "Fernanda", "Lucas", "Beatriz", "Diego"];
 const phones = ["4799999-1111", "4798888-2222", "4797777-3333", "4796666-4444", "4795555-5555", "4794444-6666", "4793333-7777", "4792222-8888", "4791111-9999", "4790000-0000"];
 
-const defaultCampaigns: Campaign[] = [
-  { id: "h1", date: "22/03/2026", list: "Clientes Março", total: 150, sent: 150, successCount: 142, failedCount: 8, status: "Concluído", startTime: "09:00", endTime: "10:45" },
-  { id: "h2", date: "18/03/2026", list: "Promoção Páscoa", total: 89, sent: 89, successCount: 85, failedCount: 4, status: "Concluído", startTime: "14:30", endTime: "15:15" },
-  { id: "h3", date: "15/03/2026", list: "Leads Instagram", total: 42, sent: 18, successCount: 16, failedCount: 2, status: "Pausado", startTime: "11:00" },
-  { id: "h4", date: "10/03/2026", list: "Base Completa", total: 320, sent: 120, successCount: 100, failedCount: 20, status: "Falhou", startTime: "08:00", endTime: "08:52" },
-  { id: "h5", date: "05/03/2026", list: "Novos Cadastros", total: 67, sent: 67, successCount: 64, failedCount: 3, status: "Concluído", startTime: "16:00", endTime: "16:40" },
-];
+const defaultCampaigns: Campaign[] = [];
+
+const parseSQLiteDate = (value: string | null): Date | null => {
+  if (!value) return null;
+  const normalized = value.includes("T") ? value : `${value.replace(" ", "T")}Z`;
+  const parsed = new Date(normalized);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const formatDate = (date: Date | null): string => {
+  if (!date) return "—";
+  return `${String(date.getDate()).padStart(2, "0")}/${String(date.getMonth() + 1).padStart(2, "0")}/${date.getFullYear()}`;
+};
+
+const formatTime = (date: Date | null): string => {
+  if (!date) return "—";
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+};
+
+const normalizeStatus = (status: string): CampaignStatus => {
+  if (status === "Concluído" || status === "Pausado" || status === "Falhou" || status === "Em andamento") {
+    return status;
+  }
+  return "Em andamento";
+};
+
+const mapDbCampaignToUi = (campaign: CampaignDbRecord): Campaign => {
+  const createdAt = parseSQLiteDate(campaign.created_at);
+  const finishedAt = parseSQLiteDate(campaign.finished_at);
+
+  return {
+    id: campaign.id,
+    date: formatDate(createdAt),
+    list: campaign.name || "Campanha sem nome",
+    total: campaign.total_contacts ?? 0,
+    sent: campaign.sent_count ?? 0,
+    successCount: campaign.success_count ?? 0,
+    failedCount: campaign.failed_count ?? 0,
+    status: normalizeStatus(campaign.status),
+    startTime: formatTime(createdAt),
+    endTime: finishedAt ? formatTime(finishedAt) : undefined,
+  };
+};
 
 function statusBadge(status: CampaignStatus) {
   switch (status) {
@@ -67,20 +107,69 @@ interface Props {
 }
 
 export default function HistoryView({ campaigns, setCampaigns }: Props) {
+  const { toast } = useToast();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
+  const [selectedContacts, setSelectedContacts] = useState<CampaignContactDbRecord[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [contactsLoading, setContactsLoading] = useState(false);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
 
   const selected = campaigns.find((c) => c.id === selectedId) ?? null;
 
+  useEffect(() => {
+    let isMounted = true;
+
+    const loadCampaigns = async () => {
+      setHistoryLoading(true);
+      try {
+        const campaignsFromDb = await window.api.getCampaigns();
+        if (!isMounted) return;
+        setCampaigns(campaignsFromDb.map(mapDbCampaignToUi));
+      } catch (error) {
+        console.error("[history] Falha ao carregar campanhas:", error);
+        if (!isMounted) return;
+        toast({
+          title: "Erro ao carregar histórico",
+          description: "Não foi possível buscar campanhas no banco local.",
+          variant: "destructive",
+        });
+      } finally {
+        if (isMounted) {
+          setHistoryLoading(false);
+        }
+      }
+    };
+
+    void loadCampaigns();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [setCampaigns, toast]);
+
   // Simulation tick for running campaigns
   const tick = useCallback(() => {
     setCampaigns((prev) =>
       prev.map((c) => {
         if (c.status !== "Em andamento") return c;
-        if (c.sent >= c.total) return { ...c, status: "Concluído" as const, endTime: now().slice(0, 5) };
+        if (c.sent >= c.total) {
+          const finishedCampaign = { ...c, status: "Concluído" as const, endTime: now().slice(0, 5) };
+          void window.api
+            .finishCampaign(
+              c.id,
+              "Concluído",
+              finishedCampaign.sent,
+              finishedCampaign.successCount,
+              finishedCampaign.failedCount
+            )
+            .catch((error) => {
+              console.error("[history] Falha ao finalizar campanha:", error);
+            });
+          return finishedCampaign;
+        }
         const success = Math.random() > 0.08;
         return {
           ...c,
@@ -104,9 +193,10 @@ export default function HistoryView({ campaigns, setCampaigns }: Props) {
   // Generate logs for selected running campaign
   useEffect(() => {
     if (!selected || (selected.status !== "Em andamento" && selected.status !== "Pausado")) return;
+    const selectedContact = selectedContacts[selected.sent] ?? null;
     const idx = selected.sent % names.length;
-    const phone = phones[idx];
-    const name = names[idx];
+    const phone = selectedContact?.number || phones[idx];
+    const name = selectedContact?.name || names[idx];
     const success = Math.random() > 0.1;
     const line = success
       ? `[${now()}] ✅ Sucesso — ${name} (${phone})`
@@ -115,16 +205,32 @@ export default function HistoryView({ campaigns, setCampaigns }: Props) {
     if (selected.status === "Em andamento") {
       setLogs((prev) => [...prev.slice(-80), `[${now()}] Enviando para ${phone}...`, line]);
     }
-  }, [selected?.sent]);
+  }, [selected?.sent, selectedContacts]);
 
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [logs]);
 
   // Reset logs when opening a different campaign
-  const openSheet = (id: string) => {
+  const openSheet = async (id: string) => {
     setSelectedId(id);
     setLogs([]);
+    setContactsLoading(true);
+
+    try {
+      const contacts = await window.api.getCampaignContacts(id);
+      setSelectedContacts(contacts);
+    } catch (error) {
+      console.error("[history] Falha ao carregar contatos da campanha:", error);
+      setSelectedContacts([]);
+      toast({
+        title: "Erro ao carregar contatos",
+        description: "Não foi possível buscar os contatos desta campanha.",
+        variant: "destructive",
+      });
+    } finally {
+      setContactsLoading(false);
+    }
   };
 
   const handlePauseResume = () => {
@@ -138,14 +244,33 @@ export default function HistoryView({ campaigns, setCampaigns }: Props) {
     );
   };
 
-  const confirmCancel = () => {
+  const confirmCancel = async () => {
     if (!selected) return;
-    setCampaigns((prev) =>
-      prev.map((c) =>
-        c.id === selected.id ? { ...c, status: "Falhou" as const, endTime: now().slice(0, 5) } : c
-      )
-    );
-    setCancelDialogOpen(false);
+
+    try {
+      const cancelledCampaign = { ...selected, status: "Falhou" as const, endTime: now().slice(0, 5) };
+      await window.api.finishCampaign(
+        selected.id,
+        "Falhou",
+        cancelledCampaign.sent,
+        cancelledCampaign.successCount,
+        cancelledCampaign.failedCount
+      );
+
+      setCampaigns((prev) =>
+        prev.map((c) =>
+          c.id === selected.id ? cancelledCampaign : c
+        )
+      );
+      setCancelDialogOpen(false);
+    } catch (error) {
+      console.error("[history] Falha ao cancelar campanha:", error);
+      toast({
+        title: "Erro ao cancelar campanha",
+        description: "Não foi possível atualizar o status no banco local.",
+        variant: "destructive",
+      });
+    }
   };
 
   return (
@@ -167,7 +292,23 @@ export default function HistoryView({ campaigns, setCampaigns }: Props) {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {campaigns.map((c) => (
+              {historyLoading && (
+                <TableRow>
+                  <TableCell colSpan={4} className="text-center text-sm text-muted-foreground py-8">
+                    Carregando histórico...
+                  </TableCell>
+                </TableRow>
+              )}
+
+              {!historyLoading && campaigns.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={4} className="text-center text-sm text-muted-foreground py-8">
+                    Nenhuma campanha encontrada no banco local.
+                  </TableCell>
+                </TableRow>
+              )}
+
+              {!historyLoading && campaigns.map((c) => (
                 <TableRow
                   key={c.id}
                   className="cursor-pointer hover:bg-muted/60 transition-colors"
@@ -194,7 +335,16 @@ export default function HistoryView({ campaigns, setCampaigns }: Props) {
       </Card>
 
       {/* Detail Sheet */}
-      <Sheet open={!!selectedId} onOpenChange={(open) => !open && setSelectedId(null)}>
+      <Sheet
+        open={!!selectedId}
+        onOpenChange={(open) => {
+          if (!open) {
+            setSelectedId(null);
+            setSelectedContacts([]);
+            setLogs([]);
+          }
+        }}
+      >
         <SheetContent side="right" className="w-full sm:max-w-lg flex flex-col gap-0 p-0">
           {selected && (
             <>
@@ -215,6 +365,29 @@ export default function HistoryView({ campaigns, setCampaigns }: Props) {
                   <SummaryCard icon={<CheckCircle2 className="w-4 h-4 text-success" />} label="Sucesso" value={selected.successCount} />
                   <SummaryCard icon={<XOctagon className="w-4 h-4 text-destructive" />} label="Falhas" value={selected.failedCount} />
                   <SummaryCard icon={<Clock className="w-4 h-4 text-muted-foreground" />} label="Término" value={selected.endTime ?? "—"} />
+                </div>
+
+                <div className="space-y-2">
+                  <h4 className="text-sm font-semibold text-foreground">Contatos da campanha</h4>
+                  {contactsLoading ? (
+                    <p className="text-xs text-muted-foreground">Carregando contatos...</p>
+                  ) : selectedContacts.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">Nenhum contato registrado para esta campanha.</p>
+                  ) : (
+                    <ScrollArea className="h-36 rounded-lg border border-border p-3">
+                      <div className="space-y-2">
+                        {selectedContacts.map((contact) => (
+                          <div key={contact.id} className="text-xs flex items-center justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="font-medium truncate">{contact.name || "Sem nome"}</p>
+                              <p className="text-muted-foreground truncate">{contact.number || "Sem número"}</p>
+                            </div>
+                            <span className="text-muted-foreground shrink-0">{contact.status}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </ScrollArea>
+                  )}
                 </div>
 
                 {/* Progress for active campaigns */}

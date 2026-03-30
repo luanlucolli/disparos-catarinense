@@ -13,9 +13,7 @@ export type Template = { id: string; title: string; text: string; doc?: JSONCont
 type View = 'campaign' | 'templates' | 'history' | 'connection'
 type UserInfo = { name?: string; number?: string }
 
-const defaultTemplates: Template[] = [
-  { id: '1', title: 'Modelo de mensagem', text: 'Isso é um modelo de mensagem.' }
-]
+const defaultTemplates: Template[] = []
 
 export default function Index(): ReactElement {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
@@ -41,6 +39,12 @@ export default function Index(): ReactElement {
     }
   }, [])
 
+  const createPlaceholderContacts = (count: number): { name: string; number: string }[] =>
+    Array.from({ length: count }, (_, index) => ({
+      name: `Contato ${index + 1}`,
+      number: `550000000${String(index + 1).padStart(4, '0')}`
+    }))
+
   const handleStartCampaign = (config: CampaignConfig): void => {
     const now = new Date()
     const dateStr = `${String(now.getDate()).padStart(2, '0')}/${String(now.getMonth() + 1).padStart(2, '0')}/${now.getFullYear()}`
@@ -58,8 +62,27 @@ export default function Index(): ReactElement {
       startTime: config.scheduled ? `${config.scheduleHour}:${config.scheduleMinute}` : timeStr
     }
 
-    setCampaigns((prev) => [newCampaign, ...prev])
-    setView('history')
+    void (async () => {
+      try {
+        await window.api.createCampaign(
+          {
+            id: newCampaign.id,
+            name: newCampaign.list,
+            status: newCampaign.status,
+            total_contacts: newCampaign.total,
+            sent_count: newCampaign.sent,
+            success_count: newCampaign.successCount,
+            failed_count: newCampaign.failedCount
+          },
+          createPlaceholderContacts(newCampaign.total)
+        )
+      } catch (error) {
+        console.error('[campaign] Falha ao criar campanha no banco local:', error)
+      }
+
+      setCampaigns((prev) => [newCampaign, ...prev])
+      setView('history')
+    })()
   }
 
   const handleConnect = (info: UserInfo): void => {

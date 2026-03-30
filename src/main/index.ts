@@ -6,6 +6,18 @@ import { promisify } from 'util'
 import { Client, LocalAuth } from 'whatsapp-web.js'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
+import {
+  getTemplates,
+  saveTemplate,
+  deleteTemplate,
+  getCampaigns,
+  createCampaign,
+  getCampaignContacts,
+  finishCampaign,
+  type CampaignInput,
+  type CampaignContactInput,
+  type TemplateInput
+} from './database'
 
 type WhatsAppEventType = 'qr' | 'ready' | 'authenticated' | 'disconnected'
 
@@ -126,7 +138,7 @@ function setupWhatsApp(mainWindow: BrowserWindow): void {
       sendWhatsAppEvent({ type: 'qr', payload: qr })
     })
 
-   clientInstance.on('ready', () => {
+    clientInstance.on('ready', () => {
       if (client !== clientInstance) return
       console.info('[whatsapp] Cliente pronto')
       const info = clientInstance.info;
@@ -213,17 +225,38 @@ function setupWhatsApp(mainWindow: BrowserWindow): void {
     } catch (error) {
       console.error('[whatsapp] Erro ao inicializar:', error)
       isClientStarted = false
-      const isTimeoutError = error instanceof Error && error.message.includes('Tempo limite ao carregar sessão')
-      
-      const messageBase = error instanceof Error ? error.message : 'Falha ao inicializar cliente do WhatsApp.'
-      const message = isTimeoutError
-        ? `${messageBase} A sessão foi mantida. Tente clicar em Conectar novamente.`
-        : messageBase
-        
-      sendWhatsAppEvent({ type: 'disconnected', payload: message })
-      
-      // MANTEMOS sua ideia: Não purgamos a sessão.
-      await resetClient(false)
+      const isTimeoutError = error instanceof Error && error.message.includes('Tempo limite')
+
+      if (isTimeoutError) {
+        console.warn('[whatsapp] Sessão corrompida detectada. Tentando logout na Meta (Best-Effort)...')
+
+        // Tenta deslogar na Meta, mas não espera mais que 5 segundos
+        if (client) {
+          try {
+            const logoutPromise = client.logout()
+            const quickTimeout = new Promise((_, rej) => setTimeout(() => rej(new Error('Timeout do logout remoto')), 5000))
+            await Promise.race([logoutPromise, quickTimeout])
+            console.info('[whatsapp] Logout remoto concluído com sucesso antes de limpar a sessão.')
+          } catch (logoutError) {
+            console.warn('[whatsapp] Falha no logout remoto (esperado em sessões corrompidas). Apenas limpando localmente.')
+          }
+        }
+
+        // AVISO PARA A UI: Avisa o usuário e pede novo QR Code
+        sendWhatsAppEvent({
+          type: 'disconnected',
+          payload: 'Sessão anterior corrompida. Por favor, conecte novamente. (Pode ser necessário desconectar o dispositivo no seu celular)'
+        })
+
+        // CRÍTICO: purgeSession = true. Se não limpar a pasta, o app vai dar timeout pra sempre.
+        await resetClient(true)
+      } else {
+        // Erros normais de rede, etc. Não purgamos a sessão.
+        const message = error instanceof Error ? error.message : 'Falha ao inicializar cliente do WhatsApp.'
+        sendWhatsAppEvent({ type: 'disconnected', payload: message })
+        await resetClient(false)
+      }
+
     } finally {
       if (timeoutHandle) clearTimeout(timeoutHandle)
       isInitializing = false
@@ -238,26 +271,26 @@ function setupWhatsApp(mainWindow: BrowserWindow): void {
 
     try {
       console.info('[whatsapp] Iniciando processo de LOGOUT real (Servidor + Local)...')
-      
+
       const logoutPromise = client.logout()
-      const timeoutPromise = new Promise((_, reject) => 
+      const timeoutPromise = new Promise((_, reject) =>
         setTimeout(() => reject(new Error('Timeout atingido no servidor da Meta')), 10000)
       )
-      
+
       await Promise.race([logoutPromise, timeoutPromise])
       console.info('[whatsapp] Logout remoto concluído com sucesso.')
 
       await destroyCurrentClient()
       await killChromiumSessionProcesses()
       clearSessionDirectory()
-      
+
       isClientStarted = false
       sendWhatsAppEvent({ type: 'disconnected', payload: 'Você foi desconectado com sucesso.' })
 
     } catch (error) {
       console.error('[whatsapp] Erro ao tentar deslogar no servidor da Meta:', error)
       sendWhatsAppEvent({ type: 'ready', payload: lastUserInfo })
-      
+
       dialog.showErrorBox(
         'Falha ao Desconectar',
         'Não foi possível finalizar a sessão no servidor do WhatsApp. Sua sessão local foi mantida. Tente desconectar direto pelo celular.'
@@ -285,10 +318,10 @@ function setupWhatsApp(mainWindow: BrowserWindow): void {
       isAppQuitting = true
 
       console.info('\n[sistema] Encerrando o aplicativo. Salvando sessão do WhatsApp com segurança...')
-      
+
       // 2. Fecha o WhatsApp educadamente (salva os arquivos)
       await destroyCurrentClient()
-      
+
       // 3. Varre qualquer lixo que sobrou para evitar arquivos travados
       await killChromiumSessionProcesses()
       clearChromiumSessionLocks()
@@ -298,6 +331,88 @@ function setupWhatsApp(mainWindow: BrowserWindow): void {
       app.quit()
     }
   })
+}
+
+let hasRegisteredDatabaseHandlers = false
+
+function throwIpcDatabaseError(channel: string, error: unknown): never {
+  console.error(`[ipc][${channel}] Erro no banco de dados:`, error)
+  const message = error instanceof Error ? error.message : 'Erro interno ao acessar o banco de dados.'
+  throw new Error(message)
+}
+
+function registerDatabaseIpcHandlers(): void {
+  if (hasRegisteredDatabaseHandlers) {
+    return
+  }
+
+  hasRegisteredDatabaseHandlers = true
+
+  ipcMain.handle('db-get-templates', async () => {
+    try {
+      return getTemplates()
+    } catch (error) {
+      return throwIpcDatabaseError('db-get-templates', error)
+    }
+  })
+
+  ipcMain.handle('db-save-template', async (_, template: TemplateInput) => {
+    try {
+      return saveTemplate(template)
+    } catch (error) {
+      return throwIpcDatabaseError('db-save-template', error)
+    }
+  })
+
+  ipcMain.handle('db-delete-template', async (_, id: string) => {
+    try {
+      return deleteTemplate(id)
+    } catch (error) {
+      return throwIpcDatabaseError('db-delete-template', error)
+    }
+  })
+
+  ipcMain.handle('db-get-campaigns', async () => {
+    try {
+      return getCampaigns()
+    } catch (error) {
+      return throwIpcDatabaseError('db-get-campaigns', error)
+    }
+  })
+
+  ipcMain.handle('db-create-campaign', async (_, campaign: CampaignInput, contacts: CampaignContactInput[]) => {
+    try {
+      return createCampaign(campaign, contacts)
+    } catch (error) {
+      return throwIpcDatabaseError('db-create-campaign', error)
+    }
+  })
+
+  ipcMain.handle('db-get-campaign-contacts', async (_, campaignId: string) => {
+    try {
+      return getCampaignContacts(campaignId)
+    } catch (error) {
+      return throwIpcDatabaseError('db-get-campaign-contacts', error)
+    }
+  })
+
+  ipcMain.handle(
+    'db-finish-campaign',
+    async (
+      _,
+      campaignId: string,
+      status: string,
+      sentCount: number,
+      successCount: number,
+      failedCount: number
+    ) => {
+      try {
+        return finishCampaign(campaignId, status, sentCount, successCount, failedCount)
+      } catch (error) {
+        return throwIpcDatabaseError('db-finish-campaign', error)
+      }
+    }
+  )
 }
 
 function createWindow(): void {
@@ -338,6 +453,7 @@ app.whenReady().then(() => {
     optimizer.watchWindowShortcuts(window)
   })
 
+  registerDatabaseIpcHandlers()
   createWindow()
 
   app.on('activate', function () {
