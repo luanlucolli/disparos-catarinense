@@ -18,7 +18,8 @@ whatsapp-auth/
 .wwebjs_cache/
 
 # Arquivos Temporários do Chromium/Puppeteer
-*.html
+[0-9]*.*.html
+[0-9]*.*.tmp
 *.tmp
 SingletonLock
 SingletonCookie
