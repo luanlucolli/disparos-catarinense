@@ -157,11 +157,24 @@ function setupWhatsApp(mainWindow: BrowserWindow): void {
       console.info(`[whatsapp] Carregando sessão (${percent}%): ${message}`)
     })
 
-    clientInstance.on('disconnected', (reason: string) => {
+    clientInstance.on('disconnected', async (reason: string) => {
       if (client !== clientInstance) return
       console.warn('[whatsapp] Cliente desconectado pelo celular:', reason)
       isClientStarted = false
       sendWhatsAppEvent({ type: 'disconnected', payload: reason })
+
+      // CORREÇÃO: Limpa o cliente morto e a sessão local, já que o acesso foi revogado na Meta
+      await resetClient(true)
+    })
+
+    clientInstance.on('auth_failure', async (message: string) => {
+      if (client !== clientInstance) return
+      console.error('[whatsapp] Falha de autenticação:', message)
+      isClientStarted = false
+      sendWhatsAppEvent({ type: 'disconnected', payload: message })
+
+      // CORREÇÃO: Limpa o cliente e a sessão inválida
+      await resetClient(true)
     })
 
     return clientInstance
@@ -217,7 +230,7 @@ function setupWhatsApp(mainWindow: BrowserWindow): void {
       const initializePromise = activeClient.initialize()
       const timeoutPromise = new Promise<never>((_, reject) => {
         timeoutHandle = setTimeout(() => {
-          reject(new Error('Tempo limite ao carregar sessão do WhatsApp. A sessão anterior pode ter sido corrompida.'))
+          reject(new Error('Tempo limite ao carregar sessão do WhatsApp. Verifique sua conexão com a internet ou se o WhatsApp Web está indisponível.'))
         }, WHATSAPP_INIT_TIMEOUT_MS)
       })
 
@@ -225,37 +238,18 @@ function setupWhatsApp(mainWindow: BrowserWindow): void {
     } catch (error) {
       console.error('[whatsapp] Erro ao inicializar:', error)
       isClientStarted = false
+      
       const isTimeoutError = error instanceof Error && error.message.includes('Tempo limite')
+      const messageBase = error instanceof Error ? error.message : 'Falha ao inicializar cliente do WhatsApp.'
+      const message = isTimeoutError
+        ? `${messageBase} A sessão foi mantida de forma segura. Verifique sua internet e tente clicar em Conectar novamente.`
+        : messageBase
 
-      if (isTimeoutError) {
-        console.warn('[whatsapp] Sessão corrompida detectada. Tentando logout na Meta (Best-Effort)...')
+      sendWhatsAppEvent({ type: 'disconnected', payload: message })
 
-        // Tenta deslogar na Meta, mas não espera mais que 5 segundos
-        if (client) {
-          try {
-            const logoutPromise = client.logout()
-            const quickTimeout = new Promise((_, rej) => setTimeout(() => rej(new Error('Timeout do logout remoto')), 5000))
-            await Promise.race([logoutPromise, quickTimeout])
-            console.info('[whatsapp] Logout remoto concluído com sucesso antes de limpar a sessão.')
-          } catch (logoutError) {
-            console.warn('[whatsapp] Falha no logout remoto (esperado em sessões corrompidas). Apenas limpando localmente.')
-          }
-        }
-
-        // AVISO PARA A UI: Avisa o usuário e pede novo QR Code
-        sendWhatsAppEvent({
-          type: 'disconnected',
-          payload: 'Sessão anterior corrompida. Por favor, conecte novamente. (Pode ser necessário desconectar o dispositivo no seu celular)'
-        })
-
-        // CRÍTICO: purgeSession = true. Se não limpar a pasta, o app vai dar timeout pra sempre.
-        await resetClient(true)
-      } else {
-        // Erros normais de rede, etc. Não purgamos a sessão.
-        const message = error instanceof Error ? error.message : 'Falha ao inicializar cliente do WhatsApp.'
-        sendWhatsAppEvent({ type: 'disconnected', payload: message })
-        await resetClient(false)
-      }
+      // CORREÇÃO CRÍTICA: Sempre passamos FALSE no catch de inicialização. 
+      // Matamos o processo do Chrome que travou, mas preservamos a pasta de sessão.
+      await resetClient(false)
 
     } finally {
       if (timeoutHandle) clearTimeout(timeoutHandle)
@@ -304,7 +298,6 @@ function setupWhatsApp(mainWindow: BrowserWindow): void {
   ipcMain.on('whatsapp-init', onWhatsAppInit)
   ipcMain.on('whatsapp-logout', onWhatsAppLogout)
 
-  // REMOVIDO: O destroyCurrentClient() daqui, para não conflitar com o encerramento do app.
   mainWindow.on('closed', () => {
     ipcMain.removeListener('whatsapp-init', onWhatsAppInit)
     ipcMain.removeListener('whatsapp-logout', onWhatsAppLogout)
