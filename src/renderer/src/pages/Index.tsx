@@ -1,61 +1,106 @@
-import { useState } from "react";
-import AppSidebar from "@/components/AppSidebar";
-import ConnectionView from "@/components/ConnectionView";
-import CampaignWizard from "@/components/CampaignWizard";
-import QRCodeScreen from "@/components/QRCodeScreen";
-import HistoryView, { defaultCampaigns, type Campaign } from "@/components/HistoryView";
-import TemplatesView from "@/components/TemplatesView";
-import type { JSONContent } from "@tiptap/core";
-import type { CampaignConfig } from "@/components/steps/StepDisparo";
+import { useEffect, useState, type ReactElement } from 'react'
+import AppSidebar from '@/components/AppSidebar'
+import CampaignWizard from '@/components/CampaignWizard'
+import ConnectionView from '@/components/ConnectionView'
+import HistoryView, { defaultCampaigns, type Campaign } from '@/components/HistoryView'
+import QRCodeScreen from '@/components/QRCodeScreen'
+import TemplatesView from '@/components/TemplatesView'
+import type { CampaignConfig } from '@/components/steps/StepDisparo'
+import type { JSONContent } from '@tiptap/core'
 
-export type Template = { id: string; title: string; text: string; doc?: JSONContent };
+export type Template = { id: string; title: string; text: string; doc?: JSONContent }
+
+type View = 'campaign' | 'templates' | 'history' | 'connection'
+type UserInfo = { name?: string; number?: string }
 
 const defaultTemplates: Template[] = [
-  { id: "1", title: "Modelo de mensagem", text: "Isso é um modelo de mensagem." },
-];
+  { id: '1', title: 'Modelo de mensagem', text: 'Isso é um modelo de mensagem.' }
+]
 
-type View = "campaign" | "templates" | "history" | "connection";
+export default function Index(): ReactElement {
+  const [isAuthenticated, setIsAuthenticated] = useState(false)
+  const [userInfo, setUserInfo] = useState<UserInfo | null>(null)
+  const [view, setView] = useState<View>('campaign')
+  const [templates, setTemplates] = useState<Template[]>(defaultTemplates)
+  const [campaigns, setCampaigns] = useState<Campaign[]>(defaultCampaigns)
+  
+  // Controle para não auto-iniciar após um logout explícito
+  const [hasLoggedOut, setHasLoggedOut] = useState(false)
 
-export default function Index() {
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [view, setView] = useState<View>("campaign");
-  const [templates, setTemplates] = useState<Template[]>(defaultTemplates);
-  const [campaigns, setCampaigns] = useState<Campaign[]>(defaultCampaigns);
+  useEffect(() => {
+    // Esse listener é a ÚNICA fonte de verdade para deslogar a tela
+    const unsubscribe = window.api.onWhatsAppEvent((_, data) => {
+      if (data.type === 'disconnected') {
+        setIsAuthenticated(false)
+        setUserInfo(null)
+      }
+    })
 
-  const handleStartCampaign = (config: CampaignConfig) => {
-    const now = new Date();
-    const dateStr = `${String(now.getDate()).padStart(2, "0")}/${String(now.getMonth() + 1).padStart(2, "0")}/${now.getFullYear()}`;
-    const timeStr = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+    return () => {
+      unsubscribe()
+    }
+  }, [])
+
+  const handleStartCampaign = (config: CampaignConfig): void => {
+    const now = new Date()
+    const dateStr = `${String(now.getDate()).padStart(2, '0')}/${String(now.getMonth() + 1).padStart(2, '0')}/${now.getFullYear()}`
+    const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
 
     const newCampaign: Campaign = {
       id: `c-${Date.now()}`,
       date: dateStr,
-      list: "Nova Campanha",
+      list: 'Nova Campanha',
       total: config.contactCount,
       sent: 0,
       successCount: 0,
       failedCount: 0,
-      status: config.scheduled ? "Pausado" : "Em andamento",
-      startTime: config.scheduled ? `${config.scheduleHour}:${config.scheduleMinute}` : timeStr,
-    };
+      status: config.scheduled ? 'Pausado' : 'Em andamento',
+      startTime: config.scheduled ? `${config.scheduleHour}:${config.scheduleMinute}` : timeStr
+    }
 
-    setCampaigns((prev) => [newCampaign, ...prev]);
-    setView("history");
-  };
+    setCampaigns((prev) => [newCampaign, ...prev])
+    setView('history')
+  }
+
+  const handleConnect = (info: UserInfo): void => {
+    setUserInfo(info)
+    setIsAuthenticated(true)
+    setHasLoggedOut(false) // Reseta ao conectar com sucesso
+  }
+
+  const handleDisconnect = (): void => {
+    // 1. Avisa que o usuário QUER deslogar para não auto-iniciar o QR Code depois
+    setHasLoggedOut(true) 
+    
+    // 2. Manda a ordem pro Backend fazer o trabalho sujo.
+    // IMPORTANTE: Não mudamos setIsAuthenticated(false) aqui! 
+    // Deixamos o backend avisar pelo listener lá no useEffect quando o logout terminar,
+    // assim damos tempo do Modal de confirmação se fechar suavemente.
+    window.api.desconectar()
+  }
 
   if (!isAuthenticated) {
-    return <QRCodeScreen onConnect={() => setIsAuthenticated(true)} />;
+    return <QRCodeScreen onConnect={handleConnect} autoStart={!hasLoggedOut} />
   }
 
   return (
     <div className="flex min-h-screen w-full">
       <AppSidebar active={view} onChange={setView} />
       <main className="flex-1 p-8 lg:p-12 overflow-auto">
-        {view === "campaign" && <CampaignWizard templates={templates} onStartCampaign={handleStartCampaign} />}
-        {view === "templates" && <TemplatesView templates={templates} setTemplates={setTemplates} />}
-        {view === "history" && <HistoryView campaigns={campaigns} setCampaigns={setCampaigns} />}
-        {view === "connection" && <ConnectionView onDisconnect={() => setIsAuthenticated(false)} />}
+        {view === 'campaign' && (
+          <CampaignWizard templates={templates} onStartCampaign={handleStartCampaign} />
+        )}
+        {view === 'templates' && (
+          <TemplatesView templates={templates} setTemplates={setTemplates} />
+        )}
+        {view === 'history' && <HistoryView campaigns={campaigns} setCampaigns={setCampaigns} />}
+        {view === 'connection' && (
+          <ConnectionView
+            userInfo={userInfo}
+            onDisconnect={handleDisconnect}
+          />
+        )}
       </main>
     </div>
-  );
+  )
 }

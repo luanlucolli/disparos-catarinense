@@ -13,7 +13,14 @@ import {
 } from "@/components/ui/alert-dialog";
 import { CheckCircle2 } from "lucide-react";
 
-export default function ConnectionView({ onDisconnect }: { onDisconnect: () => void }) {
+type UserInfo = { name?: string; number?: string };
+
+interface ConnectionViewProps {
+  onDisconnect: () => void;
+  userInfo?: UserInfo | null;
+}
+
+export default function ConnectionView({ onDisconnect, userInfo }: ConnectionViewProps) {
   const [confirmOpen, setConfirmOpen] = useState(false);
 
   return (
@@ -28,7 +35,10 @@ export default function ConnectionView({ onDisconnect }: { onDisconnect: () => v
             <div>
               <h2 className="text-xl font-bold mb-1">WhatsApp Conectado</h2>
               <p className="text-base text-success font-medium mb-1">🟢 Status: Conectado</p>
-              <p className="text-sm text-muted-foreground">Número: +55 47 9999-9999</p>
+              <p className="text-sm text-muted-foreground">
+                Número: {userInfo?.number ? `+${userInfo.number}` : "Carregando..."}
+                {userInfo?.name && ` (${userInfo.name})`}
+              </p>
             </div>
 
             <Button
