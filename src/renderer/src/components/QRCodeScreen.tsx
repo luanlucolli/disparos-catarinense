@@ -2,6 +2,16 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } 
 import QRCode from 'react-qr-code'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle
+} from '@/components/ui/alert-dialog'
 import { Loader2, Wifi } from 'lucide-react'
 
 type StatusConexao =
@@ -40,6 +50,7 @@ export default function QRCodeScreen({ onConnect, autoStart = true }: QRCodeScre
   // Inicializamos como idle, e só vamos para 'carregando' se iniciar a conexão
   const [statusConexao, setStatusConexao] = useState<StatusConexao>('idle')
   const [detalheStatus, setDetalheStatus] = useState<string>('')
+  const [resetDialogOpen, setResetDialogOpen] = useState(false)
 
   const connectedRef = useRef(false)
   const hasAutoStartedRef = useRef(false)
@@ -110,6 +121,12 @@ export default function QRCodeScreen({ onConnect, autoStart = true }: QRCodeScre
   }, [detalheStatus, statusConexao])
 
   const isProcessando = ['carregando', 'aguardando-qr', 'autenticado'].includes(statusConexao)
+  const podeExibirSaidaEmergencia = statusConexao === 'desconectado' || statusConexao === 'idle'
+
+  const confirmarForcarReset = useCallback((): void => {
+    setResetDialogOpen(false)
+    window.api.forcarReset()
+  }, [])
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-background p-4">
@@ -150,6 +167,33 @@ export default function QRCodeScreen({ onConnect, autoStart = true }: QRCodeScre
               ? 'Conectar WhatsApp'
               : 'Conectar WhatsApp'}
           </Button>
+
+          {podeExibirSaidaEmergencia && (
+            <Button
+              variant="ghost"
+              className="w-full text-xs text-muted-foreground hover:text-foreground -mt-2"
+              onClick={() => setResetDialogOpen(true)}
+            >
+              Problemas na conexão? Clique aqui para limpar a sessão
+            </Button>
+          )}
+
+          <AlertDialog open={resetDialogOpen} onOpenChange={setResetDialogOpen}>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Limpar sessão do WhatsApp?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  Isso irá remover sua conexão atual e fechar o WhatsApp para limpeza. Deseja continuar?
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                <AlertDialogAction onClick={confirmarForcarReset}>
+                  Sim, limpar sessão
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </CardContent>
       </Card>
     </div>

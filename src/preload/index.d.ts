@@ -53,6 +53,7 @@ interface AppAPI {
   onWhatsAppEvent: (callback: WhatsAppEventCallback) => () => void
   iniciarConexao: () => void
   desconectar: () => void
+  forcarReset: () => void
   getTemplates: () => Promise<TemplateRecord[]>
   saveTemplate: (template: TemplatePayload) => Promise<TemplateRecord>
   deleteTemplate: (id: string) => Promise<boolean>

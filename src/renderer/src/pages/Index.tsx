@@ -25,6 +25,28 @@ export default function Index(): ReactElement {
   // Controle para não auto-iniciar após um logout explícito
   const [hasLoggedOut, setHasLoggedOut] = useState(false)
 
+  // --- CORREÇÃO: Carregar os templates do Banco de Dados na inicialização ---
+  useEffect(() => {
+    const fetchTemplates = async () => {
+      try {
+        const dbTemplates = await window.api.getTemplates()
+        // Converte o formato do banco (string/JSON) para o formato do React
+        const parsedTemplates = dbTemplates.map(t => ({
+          id: t.id,
+          title: t.title,
+          text: t.text,
+          doc: t.doc ? JSON.parse(t.doc as string) : undefined
+        }))
+        setTemplates(parsedTemplates)
+      } catch (error) {
+        console.error('Falha ao carregar templates do banco:', error)
+      }
+    }
+    
+    fetchTemplates()
+  }, [])
+  // -------------------------------------------------------------------------
+
   useEffect(() => {
     // Esse listener é a ÚNICA fonte de verdade para deslogar a tela
     const unsubscribe = window.api.onWhatsAppEvent((_, data) => {

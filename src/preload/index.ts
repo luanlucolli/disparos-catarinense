@@ -77,6 +77,7 @@ const api = {
   },
   iniciarConexao: (): void => ipcRenderer.send('whatsapp-init'),
   desconectar: (): void => ipcRenderer.send('whatsapp-logout'),
+  forcarReset: (): void => ipcRenderer.send('whatsapp-force-reset'),
   getTemplates: (): Promise<TemplateRecord[]> => ipcRenderer.invoke('db-get-templates'),
   saveTemplate: (template: TemplatePayload): Promise<TemplateRecord> =>
     ipcRenderer.invoke('db-save-template', template),

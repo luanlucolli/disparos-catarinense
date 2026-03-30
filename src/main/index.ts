@@ -292,15 +292,40 @@ function setupWhatsApp(mainWindow: BrowserWindow): void {
     }
   }
 
+  const forceResetWhatsAppClient = async (): Promise<void> => {
+    if (isAppQuitting) {
+      return
+    }
+
+    try {
+      isInitializing = false
+      isClientStarted = false
+      await resetClient(true)
+      sendWhatsAppEvent({
+        type: 'disconnected',
+        payload: 'Sessão resetada com sucesso. Por favor, tente conectar novamente.'
+      })
+    } catch (error) {
+      console.error('[whatsapp] Erro ao forçar reset da sessão:', error)
+      sendWhatsAppEvent({
+        type: 'disconnected',
+        payload: 'Falha ao resetar a sessão. Tente novamente.'
+      })
+    }
+  }
+
   const onWhatsAppInit = (): void => { void initializeWhatsAppClient() }
   const onWhatsAppLogout = (): void => { void logoutWhatsAppClient() }
+  const onWhatsAppForceReset = (): void => { void forceResetWhatsAppClient() }
 
   ipcMain.on('whatsapp-init', onWhatsAppInit)
   ipcMain.on('whatsapp-logout', onWhatsAppLogout)
+  ipcMain.on('whatsapp-force-reset', onWhatsAppForceReset)
 
   mainWindow.on('closed', () => {
     ipcMain.removeListener('whatsapp-init', onWhatsAppInit)
     ipcMain.removeListener('whatsapp-logout', onWhatsAppLogout)
+    ipcMain.removeListener('whatsapp-force-reset', onWhatsAppForceReset)
   })
 
   // --- O NOVO MOTOR DE DESLIGAMENTO SEGURO ---
