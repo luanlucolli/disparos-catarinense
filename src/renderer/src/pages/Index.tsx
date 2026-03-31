@@ -129,9 +129,9 @@ export default function Index(): ReactElement {
   }
 
   return (
-    <div className="flex min-h-screen w-full">
+    <div className="flex h-screen w-full overflow-hidden">
       <AppSidebar active={view} onChange={setView} />
-      <main className="flex-1 p-8 lg:p-12 overflow-auto">
+      <main className="flex-1 p-8 lg:p-12 overflow-y-auto">
         {view === 'campaign' && (
           <CampaignWizard templates={templates} onStartCampaign={handleStartCampaign} />
         )}
