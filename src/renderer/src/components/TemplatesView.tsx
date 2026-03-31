@@ -221,7 +221,8 @@ export default function TemplatesView({ templates, setTemplates }: Props) {
   );
 
   return (
-    <div className="space-y-6 max-w-4xl mx-auto">
+    // Largura Máxima Padronizada para parear com a view de Histórico
+    <div className="space-y-6 max-w-5xl mx-auto w-full pb-10">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-bold mb-1">Meus Modelos de Mensagem</h2>

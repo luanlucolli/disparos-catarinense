@@ -19,7 +19,7 @@ export default function CampaignWizard({ templates, onStartCampaign }: Props) {
   const [contactCount, setContactCount] = useState(0);
 
   return (
-    <div className="max-w-5xl mx-auto">
+    <div className="max-w-5xl mx-auto w-full pb-10">
       <div className="flex items-center justify-center mb-10">
         {steps.map((label, i) => (
           <div key={i} className="flex items-center">

@@ -274,7 +274,7 @@ export default function HistoryView({ campaigns, setCampaigns }: Props) {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 max-w-5xl mx-auto w-full pb-10">
       <div>
         <h2 className="text-2xl font-bold mb-1">Histórico de Campanhas</h2>
         <p className="text-muted-foreground">Clique em uma campanha para ver os detalhes.</p>

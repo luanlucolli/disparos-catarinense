@@ -435,12 +435,13 @@ function registerDatabaseIpcHandlers(): void {
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
-    width: 900,
-    height: 670,
+    width: 1024,           // Aumentado para o padrão desktop
+    height: 768,           // Aumentado para dar respiro vertical
+    minWidth: 900,         // Limite mínimo para não quebrar tabelas
+    minHeight: 650,        // Limite mínimo vertical
     show: false,
     autoHideMenuBar: true,
-    // Remova a condicional de platform === 'linux' e aplique para todos
-    icon: icon, 
+    icon: icon,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false

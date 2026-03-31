@@ -22,15 +22,12 @@ export default function Index(): ReactElement {
   const [templates, setTemplates] = useState<Template[]>(defaultTemplates)
   const [campaigns, setCampaigns] = useState<Campaign[]>(defaultCampaigns)
   
-  // Controle para não auto-iniciar após um logout explícito
   const [hasLoggedOut, setHasLoggedOut] = useState(false)
 
-  // --- CORREÇÃO: Carregar os templates do Banco de Dados na inicialização ---
   useEffect(() => {
     const fetchTemplates = async () => {
       try {
         const dbTemplates = await window.api.getTemplates()
-        // Converte o formato do banco (string/JSON) para o formato do React
         const parsedTemplates = dbTemplates.map(t => ({
           id: t.id,
           title: t.title,
@@ -45,10 +42,8 @@ export default function Index(): ReactElement {
     
     fetchTemplates()
   }, [])
-  // -------------------------------------------------------------------------
 
   useEffect(() => {
-    // Esse listener é a ÚNICA fonte de verdade para deslogar a tela
     const unsubscribe = window.api.onWhatsAppEvent((_, data) => {
       if (data.type === 'disconnected') {
         setIsAuthenticated(false)
@@ -110,17 +105,11 @@ export default function Index(): ReactElement {
   const handleConnect = (info: UserInfo): void => {
     setUserInfo(info)
     setIsAuthenticated(true)
-    setHasLoggedOut(false) // Reseta ao conectar com sucesso
+    setHasLoggedOut(false)
   }
 
   const handleDisconnect = (): void => {
-    // 1. Avisa que o usuário QUER deslogar para não auto-iniciar o QR Code depois
     setHasLoggedOut(true) 
-    
-    // 2. Manda a ordem pro Backend fazer o trabalho sujo.
-    // IMPORTANTE: Não mudamos setIsAuthenticated(false) aqui! 
-    // Deixamos o backend avisar pelo listener lá no useEffect quando o logout terminar,
-    // assim damos tempo do Modal de confirmação se fechar suavemente.
     window.api.desconectar()
   }
 
@@ -129,9 +118,9 @@ export default function Index(): ReactElement {
   }
 
   return (
-    <div className="flex h-screen w-full overflow-hidden">
+    <div className="flex h-screen w-full overflow-hidden bg-background">
       <AppSidebar active={view} onChange={setView} />
-      <main className="flex-1 p-8 lg:p-12 overflow-y-auto">
+      <main className="flex-1 p-6 md:p-8 lg:p-12 overflow-y-auto relative">
         {view === 'campaign' && (
           <CampaignWizard templates={templates} onStartCampaign={handleStartCampaign} />
         )}
