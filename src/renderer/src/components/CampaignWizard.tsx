@@ -6,17 +6,26 @@ import StepDisparo from "./steps/StepDisparo";
 import { Check } from "lucide-react";
 import type { Template } from "@/pages/Index";
 import type { CampaignConfig } from "./steps/StepDisparo";
+import type { CampaignContactInput } from "./steps/StepContatos";
+import type { JSONContent } from "@tiptap/core";
 
 const steps = ["Contatos", "Mensagem", "Disparo"];
 
+export type CampaignStartPayload = {
+  config: CampaignConfig;
+  contacts: CampaignContactInput[];
+  messages: JSONContent[];
+};
+
 interface Props {
   templates: Template[];
-  onStartCampaign: (config: CampaignConfig) => void;
+  onStartCampaign: (payload: CampaignStartPayload) => void;
 }
 
 export default function CampaignWizard({ templates, onStartCampaign }: Props) {
   const [current, setCurrent] = useState(0);
-  const [contactCount, setContactCount] = useState(0);
+  const [contacts, setContacts] = useState<CampaignContactInput[]>([]);
+  const [messages, setMessages] = useState<JSONContent[]>([]);
 
   return (
     <div className="max-w-5xl mx-auto w-full pb-10">
@@ -44,9 +53,31 @@ export default function CampaignWizard({ templates, onStartCampaign }: Props) {
 
       <AnimatePresence mode="wait">
         <motion.div key={current} initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} transition={{ duration: 0.2 }}>
-          {current === 0 && <StepContatos onNext={(count: number) => { setContactCount(count); setCurrent(1); }} />}
-          {current === 1 && <StepMensagem onNext={() => setCurrent(2)} onBack={() => setCurrent(0)} templates={templates} />}
-          {current === 2 && <StepDisparo onBack={() => setCurrent(1)} contactCount={contactCount} onStartCampaign={onStartCampaign} />}
+          {current === 0 && (
+            <StepContatos
+              onNext={(nextContacts) => {
+                setContacts(nextContacts);
+                setCurrent(1);
+              }}
+            />
+          )}
+          {current === 1 && (
+            <StepMensagem
+              onNext={(nextMessages) => {
+                setMessages(nextMessages);
+                setCurrent(2);
+              }}
+              onBack={() => setCurrent(0)}
+              templates={templates}
+            />
+          )}
+          {current === 2 && (
+            <StepDisparo
+              onBack={() => setCurrent(1)}
+              contactCount={contacts.length}
+              onStartCampaign={(config) => onStartCampaign({ config, contacts, messages })}
+            />
+          )}
         </motion.div>
       </AnimatePresence>
     </div>

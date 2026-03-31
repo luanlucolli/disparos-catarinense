@@ -50,6 +50,37 @@ type CampaignContactRecord = CampaignContactPayload & {
   error_log: string | null
 }
 
+type CampaignServiceConfig = {
+  minDelay: number
+  maxDelay: number
+  cooldownEnabled: boolean
+  cooldownMinutes: number
+  cooldownEvery: number
+  simulateTyping?: boolean
+  waitLinkPreview?: boolean
+  scheduled?: boolean
+  scheduleDate?: string | Date | null
+  scheduleHour?: string
+  scheduleMinute?: string
+}
+
+type CampaignProgressData = {
+  campaignId: string
+  sent: number
+  success: number
+  failed: number
+  status?: string
+  log?: string
+  contactId?: number
+  contactName?: string
+  contactNumber?: string
+  contactStatus?: string
+  error?: string | null
+  finishedAt?: string
+}
+
+type CampaignProgressCallback = (data: CampaignProgressData) => void
+
 const isValidWhatsAppEvent = (data: unknown): data is WhatsAppEventData => {
   if (typeof data !== 'object' || data === null || !('type' in data)) {
     return false
@@ -57,6 +88,20 @@ const isValidWhatsAppEvent = (data: unknown): data is WhatsAppEventData => {
 
   const eventType = (data as { type?: unknown }).type
   return typeof eventType === 'string' && allowedWhatsAppEvents.includes(eventType as WhatsAppEventType)
+}
+
+const isValidCampaignProgressEvent = (data: unknown): data is CampaignProgressData => {
+  if (typeof data !== 'object' || data === null) {
+    return false
+  }
+
+  const maybeEvent = data as { campaignId?: unknown; sent?: unknown; success?: unknown; failed?: unknown }
+  return (
+    typeof maybeEvent.campaignId === 'string' &&
+    typeof maybeEvent.sent === 'number' &&
+    typeof maybeEvent.success === 'number' &&
+    typeof maybeEvent.failed === 'number'
+  )
 }
 
 const api = {
@@ -101,7 +146,30 @@ const api = {
       sentCount,
       successCount,
       failedCount
-    )
+    ),
+  startCampaign: (
+    campaignId: string,
+    config: CampaignServiceConfig,
+    messages: unknown[]
+  ): Promise<boolean> => ipcRenderer.invoke('start-campaign', campaignId, config, messages),
+  pauseCampaign: (campaignId: string): Promise<boolean> => ipcRenderer.invoke('pause-campaign', campaignId),
+  resumeCampaign: (campaignId: string): Promise<boolean> => ipcRenderer.invoke('resume-campaign', campaignId),
+  cancelCampaign: (campaignId: string): Promise<boolean> => ipcRenderer.invoke('cancel-campaign', campaignId),
+  onCampaignProgress: (callback: CampaignProgressCallback): (() => void) => {
+    const listener = (_event: IpcRendererEvent, data: unknown): void => {
+      if (!isValidCampaignProgressEvent(data)) {
+        return
+      }
+
+      callback(data)
+    }
+
+    ipcRenderer.on('campaign-progress', listener)
+
+    return () => {
+      ipcRenderer.removeListener('campaign-progress', listener)
+    }
+  }
 }
 
 // Use `contextBridge` APIs to expose Electron APIs to

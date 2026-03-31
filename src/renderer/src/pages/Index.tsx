@@ -1,11 +1,10 @@
 import { useEffect, useState, type ReactElement } from 'react'
 import AppSidebar from '@/components/AppSidebar'
-import CampaignWizard from '@/components/CampaignWizard'
+import CampaignWizard, { type CampaignStartPayload } from '@/components/CampaignWizard'
 import ConnectionView from '@/components/ConnectionView'
 import HistoryView, { defaultCampaigns, type Campaign } from '@/components/HistoryView'
 import QRCodeScreen from '@/components/QRCodeScreen'
 import TemplatesView from '@/components/TemplatesView'
-import type { CampaignConfig } from '@/components/steps/StepDisparo'
 import type { JSONContent } from '@tiptap/core'
 
 export type Template = { id: string; title: string; text: string; doc?: JSONContent }
@@ -32,7 +31,10 @@ export default function Index(): ReactElement {
           id: t.id,
           title: t.title,
           text: t.text,
-          doc: t.doc ? JSON.parse(t.doc as string) : undefined
+          doc:
+            typeof t.doc === 'string'
+              ? (JSON.parse(t.doc) as JSONContent)
+              : (t.doc as JSONContent | undefined)
         }))
         setTemplates(parsedTemplates)
       } catch (error) {
@@ -56,13 +58,11 @@ export default function Index(): ReactElement {
     }
   }, [])
 
-  const createPlaceholderContacts = (count: number): { name: string; number: string }[] =>
-    Array.from({ length: count }, (_, index) => ({
-      name: `Contato ${index + 1}`,
-      number: `550000000${String(index + 1).padStart(4, '0')}`
-    }))
+  const handleStartCampaign = ({ config, contacts, messages }: CampaignStartPayload): void => {
+    if (contacts.length === 0 || messages.length === 0) {
+      return
+    }
 
-  const handleStartCampaign = (config: CampaignConfig): void => {
     const now = new Date()
     const dateStr = `${String(now.getDate()).padStart(2, '0')}/${String(now.getMonth() + 1).padStart(2, '0')}/${now.getFullYear()}`
     const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
@@ -71,7 +71,7 @@ export default function Index(): ReactElement {
       id: `c-${Date.now()}`,
       date: dateStr,
       list: 'Nova Campanha',
-      total: config.contactCount,
+      total: contacts.length,
       sent: 0,
       successCount: 0,
       failedCount: 0,
@@ -91,14 +91,23 @@ export default function Index(): ReactElement {
             success_count: newCampaign.successCount,
             failed_count: newCampaign.failedCount
           },
-          createPlaceholderContacts(newCampaign.total)
+          contacts
         )
-      } catch (error) {
-        console.error('[campaign] Falha ao criar campanha no banco local:', error)
-      }
 
-      setCampaigns((prev) => [newCampaign, ...prev])
-      setView('history')
+        setCampaigns((prev) => [newCampaign, ...prev.filter((campaign) => campaign.id !== newCampaign.id)])
+        setView('history')
+
+        await window.api.startCampaign(newCampaign.id, config, messages)
+      } catch (error) {
+        console.error('[campaign] Falha ao iniciar campanha:', error)
+        setCampaigns((prev) =>
+          prev.map((campaign) =>
+            campaign.id === newCampaign.id
+              ? { ...campaign, status: 'Falhou', endTime: timeStr }
+              : campaign
+          )
+        )
+      }
     })()
   }
 

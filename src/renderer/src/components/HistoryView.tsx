@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -6,15 +6,32 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
-  Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription,
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetDescription,
 } from "@/components/ui/sheet";
 import {
-  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
-  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import {
-  RefreshCw, Pause, Play, XCircle, CheckCircle2, XOctagon, Clock,
-  Users, ArrowRight,
+  RefreshCw,
+  Pause,
+  Play,
+  XCircle,
+  CheckCircle2,
+  XOctagon,
+  Clock,
+  Users,
+  ArrowRight,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
@@ -35,16 +52,20 @@ export interface Campaign {
 
 type CampaignDbRecord = Awaited<ReturnType<Window["api"]["getCampaigns"]>>[number];
 type CampaignContactDbRecord = Awaited<ReturnType<Window["api"]["getCampaignContacts"]>>[number];
-
-const names = ["Maria", "João", "Ana", "Carlos", "Paula", "Roberto", "Fernanda", "Lucas", "Beatriz", "Diego"];
-const phones = ["4799999-1111", "4798888-2222", "4797777-3333", "4796666-4444", "4795555-5555", "4794444-6666", "4793333-7777", "4792222-8888", "4791111-9999", "4790000-0000"];
+type CampaignProgressData = Parameters<Window["api"]["onCampaignProgress"]>[0] extends (
+  arg: infer T
+) => void
+  ? T
+  : never;
 
 const defaultCampaigns: Campaign[] = [];
 
-const parseSQLiteDate = (value: string | null): Date | null => {
+const parseSQLiteDate = (value: string | null | undefined): Date | null => {
   if (!value) return null;
+
   const normalized = value.includes("T") ? value : `${value.replace(" ", "T")}Z`;
   const parsed = new Date(normalized);
+
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 };
 
@@ -58,10 +79,13 @@ const formatTime = (date: Date | null): string => {
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 };
 
-const normalizeStatus = (status: string): CampaignStatus => {
+const nowClock = (): string => formatTime(new Date());
+
+const normalizeStatus = (status?: string): CampaignStatus => {
   if (status === "Concluído" || status === "Pausado" || status === "Falhou" || status === "Em andamento") {
     return status;
   }
+
   return "Em andamento";
 };
 
@@ -96,11 +120,6 @@ function statusBadge(status: CampaignStatus) {
   }
 }
 
-function now() {
-  const d = new Date();
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}`;
-}
-
 interface Props {
   campaigns: Campaign[];
   setCampaigns: React.Dispatch<React.SetStateAction<Campaign[]>>;
@@ -109,28 +128,37 @@ interface Props {
 export default function HistoryView({ campaigns, setCampaigns }: Props) {
   const { toast } = useToast();
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [logs, setLogs] = useState<string[]>([]);
   const [selectedContacts, setSelectedContacts] = useState<CampaignContactDbRecord[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [contactsLoading, setContactsLoading] = useState(false);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [campaignLogs, setCampaignLogs] = useState<Record<string, string[]>>({});
+
+  const selectedIdRef = useRef<string | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
 
   const selected = campaigns.find((c) => c.id === selectedId) ?? null;
+  const logs = selectedId ? campaignLogs[selectedId] ?? [] : [];
+
+  useEffect(() => {
+    selectedIdRef.current = selectedId;
+  }, [selectedId]);
 
   useEffect(() => {
     let isMounted = true;
 
     const loadCampaigns = async () => {
       setHistoryLoading(true);
+
       try {
         const campaignsFromDb = await window.api.getCampaigns();
         if (!isMounted) return;
+
         setCampaigns(campaignsFromDb.map(mapDbCampaignToUi));
       } catch (error) {
         console.error("[history] Falha ao carregar campanhas:", error);
         if (!isMounted) return;
+
         toast({
           title: "Erro ao carregar histórico",
           description: "Não foi possível buscar campanhas no banco local.",
@@ -150,71 +178,75 @@ export default function HistoryView({ campaigns, setCampaigns }: Props) {
     };
   }, [setCampaigns, toast]);
 
-  // Simulation tick for running campaigns
-  const tick = useCallback(() => {
-    setCampaigns((prev) =>
-      prev.map((c) => {
-        if (c.status !== "Em andamento") return c;
-        if (c.sent >= c.total) {
-          const finishedCampaign = { ...c, status: "Concluído" as const, endTime: now().slice(0, 5) };
-          void window.api
-            .finishCampaign(
-              c.id,
-              "Concluído",
-              finishedCampaign.sent,
-              finishedCampaign.successCount,
-              finishedCampaign.failedCount
-            )
-            .catch((error) => {
-              console.error("[history] Falha ao finalizar campanha:", error);
-            });
-          return finishedCampaign;
-        }
-        const success = Math.random() > 0.08;
+  useEffect(() => {
+    const appendLog = (campaignId: string, line: string) => {
+      setCampaignLogs((prev) => {
+        const previousLogs = prev[campaignId] ?? [];
         return {
-          ...c,
-          sent: c.sent + 1,
-          successCount: c.successCount + (success ? 1 : 0),
-          failedCount: c.failedCount + (success ? 0 : 1),
+          ...prev,
+          [campaignId]: [...previousLogs.slice(-199), line],
         };
-      })
-    );
+      });
+    };
+
+    const unsubscribe = window.api.onCampaignProgress((event: CampaignProgressData) => {
+      setCampaigns((prev) =>
+        prev.map((campaign) => {
+          if (campaign.id !== event.campaignId) {
+            return campaign;
+          }
+
+          const nextStatus = event.status ? normalizeStatus(event.status) : campaign.status;
+
+          let nextEndTime = campaign.endTime;
+          if (nextStatus === "Concluído" || nextStatus === "Falhou") {
+            const finishedDate = parseSQLiteDate(event.finishedAt) ?? new Date();
+            nextEndTime = formatTime(finishedDate);
+          } else if (nextStatus === "Em andamento") {
+            nextEndTime = undefined;
+          }
+
+          return {
+            ...campaign,
+            sent: event.sent,
+            successCount: event.success,
+            failedCount: event.failed,
+            status: nextStatus,
+            endTime: nextEndTime,
+          };
+        })
+      );
+
+      if (event.log) {
+        appendLog(event.campaignId, event.log);
+      }
+
+      if (selectedIdRef.current === event.campaignId && event.contactId) {
+        setSelectedContacts((prev) =>
+          prev.map((contact) =>
+            contact.id === event.contactId
+              ? {
+                  ...contact,
+                  status: event.contactStatus ?? contact.status,
+                  error_log: event.error ?? contact.error_log,
+                }
+              : contact
+          )
+        );
+      }
+    });
+
+    return () => {
+      unsubscribe();
+    };
   }, [setCampaigns]);
-
-  // Run simulation interval
-  useEffect(() => {
-    const hasRunning = campaigns.some((c) => c.status === "Em andamento");
-    if (hasRunning) {
-      intervalRef.current = setInterval(tick, 600);
-      return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
-    }
-  }, [campaigns.some((c) => c.status === "Em andamento"), tick]);
-
-  // Generate logs for selected running campaign
-  useEffect(() => {
-    if (!selected || (selected.status !== "Em andamento" && selected.status !== "Pausado")) return;
-    const selectedContact = selectedContacts[selected.sent] ?? null;
-    const idx = selected.sent % names.length;
-    const phone = selectedContact?.number || phones[idx];
-    const name = selectedContact?.name || names[idx];
-    const success = Math.random() > 0.1;
-    const line = success
-      ? `[${now()}] ✅ Sucesso — ${name} (${phone})`
-      : `[${now()}] ❌ Falha: Número inválido (${phone})`;
-
-    if (selected.status === "Em andamento") {
-      setLogs((prev) => [...prev.slice(-80), `[${now()}] Enviando para ${phone}...`, line]);
-    }
-  }, [selected?.sent, selectedContacts]);
 
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [logs]);
 
-  // Reset logs when opening a different campaign
   const openSheet = async (id: string) => {
     setSelectedId(id);
-    setLogs([]);
     setContactsLoading(true);
 
     try {
@@ -233,41 +265,53 @@ export default function HistoryView({ campaigns, setCampaigns }: Props) {
     }
   };
 
-  const handlePauseResume = () => {
+  const handlePauseResume = async () => {
     if (!selected) return;
-    setCampaigns((prev) =>
-      prev.map((c) =>
-        c.id === selected.id
-          ? { ...c, status: c.status === "Em andamento" ? ("Pausado" as const) : ("Em andamento" as const) }
-          : c
-      )
-    );
+
+    try {
+      if (selected.status === "Em andamento") {
+        await window.api.pauseCampaign(selected.id);
+        setCampaigns((prev) =>
+          prev.map((campaign) =>
+            campaign.id === selected.id ? { ...campaign, status: "Pausado" } : campaign
+          )
+        );
+      } else if (selected.status === "Pausado") {
+        await window.api.resumeCampaign(selected.id);
+        setCampaigns((prev) =>
+          prev.map((campaign) =>
+            campaign.id === selected.id ? { ...campaign, status: "Em andamento" } : campaign
+          )
+        );
+      }
+    } catch (error) {
+      console.error("[history] Falha ao pausar/retomar campanha:", error);
+      toast({
+        title: "Erro ao atualizar campanha",
+        description: "Não foi possível pausar ou retomar a campanha.",
+        variant: "destructive",
+      });
+    }
   };
 
   const confirmCancel = async () => {
     if (!selected) return;
 
     try {
-      const cancelledCampaign = { ...selected, status: "Falhou" as const, endTime: now().slice(0, 5) };
-      await window.api.finishCampaign(
-        selected.id,
-        "Falhou",
-        cancelledCampaign.sent,
-        cancelledCampaign.successCount,
-        cancelledCampaign.failedCount
-      );
-
+      await window.api.cancelCampaign(selected.id);
+      setCancelDialogOpen(false);
       setCampaigns((prev) =>
-        prev.map((c) =>
-          c.id === selected.id ? cancelledCampaign : c
+        prev.map((campaign) =>
+          campaign.id === selected.id
+            ? { ...campaign, status: "Falhou", endTime: nowClock() }
+            : campaign
         )
       );
-      setCancelDialogOpen(false);
     } catch (error) {
       console.error("[history] Falha ao cancelar campanha:", error);
       toast({
         title: "Erro ao cancelar campanha",
-        description: "Não foi possível atualizar o status no banco local.",
+        description: "Não foi possível cancelar a campanha no backend.",
         variant: "destructive",
       });
     }
@@ -308,25 +352,30 @@ export default function HistoryView({ campaigns, setCampaigns }: Props) {
                 </TableRow>
               )}
 
-              {!historyLoading && campaigns.map((c) => (
+              {!historyLoading && campaigns.map((campaign) => (
                 <TableRow
-                  key={c.id}
+                  key={campaign.id}
                   className="cursor-pointer hover:bg-muted/60 transition-colors"
-                  onClick={() => openSheet(c.id)}
+                  onClick={() => openSheet(campaign.id)}
                 >
-                  <TableCell className="font-medium">{c.date}</TableCell>
-                  <TableCell>{c.list}</TableCell>
+                  <TableCell className="font-medium">{campaign.date}</TableCell>
+                  <TableCell>{campaign.list}</TableCell>
                   <TableCell className="text-center">
-                    {c.status === "Em andamento" ? (
+                    {campaign.status === "Em andamento" || campaign.status === "Pausado" ? (
                       <div className="flex items-center gap-2 justify-center">
-                        <Progress value={(c.sent / c.total) * 100} className="h-2 w-20" />
-                        <span className="text-xs font-medium text-muted-foreground">{c.sent}/{c.total}</span>
+                        <Progress
+                          value={campaign.total > 0 ? (campaign.sent / campaign.total) * 100 : 0}
+                          className="h-2 w-20"
+                        />
+                        <span className="text-xs font-medium text-muted-foreground">
+                          {campaign.sent}/{campaign.total}
+                        </span>
                       </div>
                     ) : (
-                      <span className="font-semibold">{c.sent}/{c.total}</span>
+                      <span className="font-semibold">{campaign.sent}/{campaign.total}</span>
                     )}
                   </TableCell>
-                  <TableCell>{statusBadge(c.status)}</TableCell>
+                  <TableCell>{statusBadge(campaign.status)}</TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -334,14 +383,12 @@ export default function HistoryView({ campaigns, setCampaigns }: Props) {
         </CardContent>
       </Card>
 
-      {/* Detail Sheet */}
       <Sheet
         open={!!selectedId}
         onOpenChange={(open) => {
           if (!open) {
             setSelectedId(null);
             setSelectedContacts([]);
-            setLogs([]);
           }
         }}
       >
@@ -352,14 +399,15 @@ export default function HistoryView({ campaigns, setCampaigns }: Props) {
                 <div className="flex items-center justify-between gap-4">
                   <div>
                     <SheetTitle className="text-xl">{selected.list}</SheetTitle>
-                    <SheetDescription className="text-xs mt-1">{selected.date} — Início às {selected.startTime}</SheetDescription>
+                    <SheetDescription className="text-xs mt-1">
+                      {selected.date} — Início às {selected.startTime}
+                    </SheetDescription>
                   </div>
                   {statusBadge(selected.status)}
                 </div>
               </SheetHeader>
 
               <div className="flex-1 overflow-y-auto p-6 space-y-5">
-                {/* Summary Cards */}
                 <div className="grid grid-cols-2 gap-3">
                   <SummaryCard icon={<Users className="w-4 h-4 text-primary" />} label="Total" value={selected.total} />
                   <SummaryCard icon={<CheckCircle2 className="w-4 h-4 text-success" />} label="Sucesso" value={selected.successCount} />
@@ -381,6 +429,9 @@ export default function HistoryView({ campaigns, setCampaigns }: Props) {
                             <div className="min-w-0">
                               <p className="font-medium truncate">{contact.name || "Sem nome"}</p>
                               <p className="text-muted-foreground truncate">{contact.number || "Sem número"}</p>
+                              {contact.error_log && (
+                                <p className="text-destructive truncate">{contact.error_log}</p>
+                              )}
                             </div>
                             <span className="text-muted-foreground shrink-0">{contact.status}</span>
                           </div>
@@ -390,7 +441,6 @@ export default function HistoryView({ campaigns, setCampaigns }: Props) {
                   )}
                 </div>
 
-                {/* Progress for active campaigns */}
                 {(selected.status === "Em andamento" || selected.status === "Pausado") && (
                   <>
                     <div className="space-y-2">
@@ -398,28 +448,47 @@ export default function HistoryView({ campaigns, setCampaigns }: Props) {
                         <span className="text-muted-foreground">Progresso</span>
                         <span className="font-semibold">{selected.sent}/{selected.total}</span>
                       </div>
-                      <Progress value={(selected.sent / selected.total) * 100} className="h-3" />
+                      <Progress
+                        value={selected.total > 0 ? (selected.sent / selected.total) * 100 : 0}
+                        className="h-3"
+                      />
                     </div>
 
                     <div className="flex gap-2">
                       <Button variant="outline" size="sm" className="flex-1 gap-1.5" onClick={handlePauseResume}>
-                        {selected.status === "Em andamento" ? <><Pause className="w-3.5 h-3.5" /> Pausar</> : <><Play className="w-3.5 h-3.5" /> Retomar</>}
+                        {selected.status === "Em andamento" ? (
+                          <>
+                            <Pause className="w-3.5 h-3.5" /> Pausar
+                          </>
+                        ) : (
+                          <>
+                            <Play className="w-3.5 h-3.5" /> Retomar
+                          </>
+                        )}
                       </Button>
                       <Button variant="destructive" size="sm" className="flex-1 gap-1.5" onClick={() => setCancelDialogOpen(true)}>
                         <XCircle className="w-3.5 h-3.5" /> Cancelar
                       </Button>
                     </div>
 
-                    {/* Live Log */}
                     <div className="space-y-2">
                       <h4 className="text-sm font-semibold text-foreground">Log em tempo real</h4>
                       <ScrollArea className="h-48 rounded-lg bg-[hsl(210,25%,10%)] p-3 font-mono text-xs text-[hsl(142,40%,70%)]">
                         {logs.length === 0 && (
                           <p className="text-[hsl(210,15%,45%)] italic">Aguardando eventos...</p>
                         )}
-                        {logs.map((l, i) => (
-                          <p key={i} className={l.includes("❌") ? "text-[hsl(0,72%,65%)]" : l.includes("✅") ? "text-[hsl(142,64%,55%)]" : "text-[hsl(210,15%,55%)]"}>
-                            {l}
+                        {logs.map((line, index) => (
+                          <p
+                            key={`${line}-${index}`}
+                            className={
+                              line.includes("❌")
+                                ? "text-[hsl(0,72%,65%)]"
+                                : line.includes("✅")
+                                  ? "text-[hsl(142,64%,55%)]"
+                                  : "text-[hsl(210,15%,55%)]"
+                            }
+                          >
+                            {line}
                           </p>
                         ))}
                         <div ref={logEndRef} />
@@ -428,7 +497,6 @@ export default function HistoryView({ campaigns, setCampaigns }: Props) {
                   </>
                 )}
 
-                {/* Static summary for finished */}
                 {selected.status === "Concluído" && (
                   <div className="bg-success/5 border border-success/20 rounded-lg p-4 text-center">
                     <p className="text-sm text-success font-medium">✅ Campanha finalizada com sucesso</p>
@@ -448,9 +516,8 @@ export default function HistoryView({ campaigns, setCampaigns }: Props) {
                 )}
               </div>
 
-              {/* Footer */}
               <div className="border-t p-4">
-                <Button variant="outline" className="w-full gap-2">
+                <Button variant="outline" className="w-full gap-2" disabled>
                   <RefreshCw className="w-4 h-4" /> Repetir Campanha <ArrowRight className="w-4 h-4 ml-auto" />
                 </Button>
               </div>

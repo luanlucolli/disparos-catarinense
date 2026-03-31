@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
+import { app, shell, BrowserWindow, ipcMain } from 'electron'
 import { execFile } from 'child_process'
 import { rmSync } from 'fs'
 import { join } from 'path'
@@ -6,6 +6,7 @@ import { promisify } from 'util'
 import { Client, LocalAuth } from 'whatsapp-web.js'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
+import { CampaignService, type CampaignServiceConfig } from './CampaignService'
 import {
   getTemplates,
   saveTemplate,
@@ -31,8 +32,23 @@ const execFileAsync = promisify(execFile)
 
 // Flag global para o Desligamento Gracioso
 let isAppQuitting = false
+let currentMainWindow: BrowserWindow | null = null
+let currentWhatsAppClient: Client | null = null
+
+const campaignService = new CampaignService({
+  getClient: () => currentWhatsAppClient,
+  emitProgress: (event) => {
+    if (!currentMainWindow || currentMainWindow.isDestroyed() || currentMainWindow.webContents.isDestroyed()) {
+      return
+    }
+
+    currentMainWindow.webContents.send('campaign-progress', event)
+  }
+})
 
 function setupWhatsApp(mainWindow: BrowserWindow): void {
+  currentMainWindow = mainWindow
+
   let isInitializing = false
   let isClientStarted = false
   
@@ -190,6 +206,8 @@ function setupWhatsApp(mainWindow: BrowserWindow): void {
       await resetClient(true)
     })
 
+    currentWhatsAppClient = clientInstance
+
     return clientInstance
   }
 
@@ -202,6 +220,7 @@ function setupWhatsApp(mainWindow: BrowserWindow): void {
       console.warn('[whatsapp] Aviso ao destruir cliente atual:', error)
     } finally {
       client = null
+      currentWhatsAppClient = null
     }
   }
 
@@ -338,6 +357,10 @@ function setupWhatsApp(mainWindow: BrowserWindow): void {
     ipcMain.removeListener('whatsapp-init', onWhatsAppInit)
     ipcMain.removeListener('whatsapp-logout', onWhatsAppLogout)
     ipcMain.removeListener('whatsapp-force-reset', onWhatsAppForceReset)
+
+    if (currentMainWindow === mainWindow) {
+      currentMainWindow = null
+    }
   })
 
   // --- O NOVO MOTOR DE DESLIGAMENTO SEGURO ---
@@ -359,6 +382,7 @@ function setupWhatsApp(mainWindow: BrowserWindow): void {
 }
 
 let hasRegisteredDatabaseHandlers = false
+let hasRegisteredCampaignHandlers = false
 
 function throwIpcDatabaseError(channel: string, error: unknown): never {
   console.error(`[ipc][${channel}] Erro no banco de dados:`, error)
@@ -440,6 +464,56 @@ function registerDatabaseIpcHandlers(): void {
   )
 }
 
+function throwIpcCampaignError(channel: string, error: unknown): never {
+  console.error(`[ipc][${channel}] Erro no motor de campanha:`, error)
+  const message =
+    error instanceof Error ? error.message : 'Erro interno ao controlar o motor de campanhas.'
+  throw new Error(message)
+}
+
+function registerCampaignIpcHandlers(): void {
+  if (hasRegisteredCampaignHandlers) {
+    return
+  }
+
+  hasRegisteredCampaignHandlers = true
+
+  ipcMain.handle(
+    'start-campaign',
+    async (_, campaignId: string, config: CampaignServiceConfig, messages: unknown[]) => {
+      try {
+        return await campaignService.startCampaign(campaignId, config, messages)
+      } catch (error) {
+        return throwIpcCampaignError('start-campaign', error)
+      }
+    }
+  )
+
+  ipcMain.handle('pause-campaign', async (_, campaignId: string) => {
+    try {
+      return await campaignService.pauseCampaign(campaignId)
+    } catch (error) {
+      return throwIpcCampaignError('pause-campaign', error)
+    }
+  })
+
+  ipcMain.handle('resume-campaign', async (_, campaignId: string) => {
+    try {
+      return await campaignService.resumeCampaign(campaignId)
+    } catch (error) {
+      return throwIpcCampaignError('resume-campaign', error)
+    }
+  })
+
+  ipcMain.handle('cancel-campaign', async (_, campaignId: string) => {
+    try {
+      return await campaignService.cancelCampaign(campaignId)
+    } catch (error) {
+      return throwIpcCampaignError('cancel-campaign', error)
+    }
+  })
+}
+
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
     width: 1024,
@@ -481,6 +555,7 @@ app.whenReady().then(() => {
   })
 
   registerDatabaseIpcHandlers()
+  registerCampaignIpcHandlers()
   createWindow()
 
   app.on('activate', function () {

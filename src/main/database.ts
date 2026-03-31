@@ -61,6 +61,12 @@ export type CampaignContactRecord = {
   error_log: string | null
 }
 
+export type CampaignProgress = {
+  sent: number
+  success: number
+  failed: number
+}
+
 let db: InstanceType<typeof Database> | null = null
 
 const parseTemplateDoc = (doc: string | null): unknown | undefined => {
@@ -199,6 +205,29 @@ export const getCampaigns = (): CampaignRecord[] => {
     .all() as CampaignRecord[]
 }
 
+export const getCampaignById = (campaignId: string): CampaignRecord | null => {
+  const database = getDb()
+
+  const record = database
+    .prepare(
+      `SELECT
+        id,
+        name,
+        status,
+        total_contacts,
+        sent_count,
+        success_count,
+        failed_count,
+        created_at,
+        finished_at
+       FROM campaigns
+       WHERE id = ?`
+    )
+    .get(campaignId) as CampaignRecord | undefined
+
+  return record ?? null
+}
+
 export const getCampaignContacts = (campaignId: string): CampaignContactRecord[] => {
   const database = getDb()
 
@@ -207,6 +236,19 @@ export const getCampaignContacts = (campaignId: string): CampaignContactRecord[]
       `SELECT id, campaign_id, name, number, status, error_log
        FROM campaign_contacts
        WHERE campaign_id = ?
+       ORDER BY id ASC`
+    )
+    .all(campaignId) as CampaignContactRecord[]
+}
+
+export const getPendingCampaignContacts = (campaignId: string): CampaignContactRecord[] => {
+  const database = getDb()
+
+  return database
+    .prepare(
+      `SELECT id, campaign_id, name, number, status, error_log
+       FROM campaign_contacts
+       WHERE campaign_id = ? AND status = 'pending'
        ORDER BY id ASC`
     )
     .all(campaignId) as CampaignContactRecord[]
@@ -281,6 +323,60 @@ export const createCampaign = (campaign: CampaignInput, contacts: CampaignContac
   }
 
   return createdCampaign
+}
+
+export const updateCampaignStatus = (campaignId: string, status: string): boolean => {
+  const database = getDb()
+
+  const result = database
+    .prepare(
+      `UPDATE campaigns
+       SET status = ?
+       WHERE id = ?`
+    )
+    .run(status, campaignId)
+
+  return result.changes > 0
+}
+
+export const updateCampaignProgress = (
+  campaignId: string,
+  sentCount: number,
+  successCount: number,
+  failedCount: number
+): boolean => {
+  const database = getDb()
+
+  const result = database
+    .prepare(
+      `UPDATE campaigns
+       SET
+         sent_count = ?,
+         success_count = ?,
+         failed_count = ?
+       WHERE id = ?`
+    )
+    .run(sentCount, successCount, failedCount, campaignId)
+
+  return result.changes > 0
+}
+
+export const updateCampaignContactStatus = (
+  contactId: number,
+  status: string,
+  errorLog: string | null = null
+): boolean => {
+  const database = getDb()
+
+  const result = database
+    .prepare(
+      `UPDATE campaign_contacts
+       SET status = ?, error_log = ?
+       WHERE id = ?`
+    )
+    .run(status, errorLog, contactId)
+
+  return result.changes > 0
 }
 
 export const finishCampaign = (

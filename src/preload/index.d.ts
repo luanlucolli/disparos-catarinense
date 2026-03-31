@@ -49,6 +49,37 @@ type CampaignContactRecord = CampaignContactPayload & {
   error_log: string | null
 }
 
+type CampaignServiceConfig = {
+  minDelay: number
+  maxDelay: number
+  cooldownEnabled: boolean
+  cooldownMinutes: number
+  cooldownEvery: number
+  simulateTyping?: boolean
+  waitLinkPreview?: boolean
+  scheduled?: boolean
+  scheduleDate?: string | Date | null
+  scheduleHour?: string
+  scheduleMinute?: string
+}
+
+type CampaignProgressData = {
+  campaignId: string
+  sent: number
+  success: number
+  failed: number
+  status?: string
+  log?: string
+  contactId?: number
+  contactName?: string
+  contactNumber?: string
+  contactStatus?: string
+  error?: string | null
+  finishedAt?: string
+}
+
+type CampaignProgressCallback = (data: CampaignProgressData) => void
+
 interface AppAPI {
   onWhatsAppEvent: (callback: WhatsAppEventCallback) => () => void
   iniciarConexao: () => void
@@ -67,6 +98,11 @@ interface AppAPI {
     successCount: number,
     failedCount: number
   ) => Promise<boolean>
+  startCampaign: (campaignId: string, config: CampaignServiceConfig, messages: unknown[]) => Promise<boolean>
+  pauseCampaign: (campaignId: string) => Promise<boolean>
+  resumeCampaign: (campaignId: string) => Promise<boolean>
+  cancelCampaign: (campaignId: string) => Promise<boolean>
+  onCampaignProgress: (callback: CampaignProgressCallback) => () => void
 }
 
 declare global {

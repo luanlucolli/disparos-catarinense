@@ -19,7 +19,6 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import SpintaxModal from "@/components/SpintaxModal";
 import type { Template } from "@/pages/Index";
-import { cn } from "@/lib/utils";
 
 // Tiptap Imports
 import { useEditor, EditorContent } from "@tiptap/react";
@@ -31,7 +30,6 @@ import { VariableNode, SpintaxNode, generatePreviewText } from "@/lib/tiptap-ext
 const MAX_TABS = 5;
 const tabLabels = ["A", "B", "C", "D", "E"];
 const OPT_OUT_TEXT = "(Para parar de receber nossas mensagens, é só responder SAIR)";
-const INLINE_TAG_WIDTH = "w-[220px] max-w-[220px]";
 
 const createEmptyDoc = (): JSONContent => ({
   type: "doc",
@@ -42,7 +40,7 @@ const createEmptyDoc = (): JSONContent => ({
 // COMPONENTE PRINCIPAL
 // ============================================================================
 interface Props {
-  onNext: () => void;
+  onNext: (messages: JSONContent[]) => void;
   onBack: () => void;
   templates: Template[];
 }
@@ -248,6 +246,11 @@ export default function StepMensagem({ onNext, onBack, templates }: Props) {
     return tabsDocs.some((doc) => generatePreviewText(doc).trim().length > 0);
   }, [tabsDocs]);
 
+  const filledMessageDocs = useMemo(
+    () => tabsDocs.filter((doc) => generatePreviewText(doc).trim().length > 0),
+    [tabsDocs]
+  );
+
   const hasLink = useMemo(() => {
     const allText = tabsDocs.map((doc) => generatePreviewText(doc)).join(" ");
     return /https?:\/\//.test(allText);
@@ -438,7 +441,7 @@ export default function StepMensagem({ onNext, onBack, templates }: Props) {
         <Button
           size="lg"
           className="text-base px-8 py-6"
-          onClick={onNext}
+          onClick={() => onNext(filledMessageDocs)}
           disabled={!hasAnyContent}
         >
           Próximo Passo →

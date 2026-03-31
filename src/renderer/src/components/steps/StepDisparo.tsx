@@ -31,6 +31,8 @@ export interface CampaignConfig {
   cooldownEnabled: boolean;
   cooldownMinutes: number;
   cooldownEvery: number;
+  simulateTyping: boolean;
+  waitLinkPreview: boolean;
   scheduled: boolean;
   scheduleDate?: Date;
   scheduleHour: string;
@@ -59,7 +61,7 @@ export default function StepDisparo({ onBack, contactCount, onStartCampaign }: S
   const [scheduleHour, setScheduleHour] = useState("09");
   const [scheduleMinute, setScheduleMinute] = useState("00");
 
-  const total = contactCount > 0 ? contactCount : 150;
+  const total = Math.max(0, contactCount);
 
   const handleMinBlur = () => { if (minDelay > maxDelay) setMaxDelay(minDelay); };
   const handleMaxBlur = () => { if (maxDelay < minDelay) setMinDelay(maxDelay); };
@@ -86,6 +88,7 @@ export default function StepDisparo({ onBack, contactCount, onStartCampaign }: S
       contactCount: total,
       minDelay, maxDelay,
       cooldownEnabled, cooldownMinutes, cooldownEvery,
+      simulateTyping, waitLinkPreview,
       scheduled, scheduleDate, scheduleHour, scheduleMinute,
     });
   };
@@ -242,7 +245,7 @@ export default function StepDisparo({ onBack, contactCount, onStartCampaign }: S
         <Button variant="ghost" size="lg" className="text-base gap-2 py-6 text-muted-foreground hover:text-foreground" onClick={onBack}>
           <ArrowLeft className="w-4 h-4" /> Voltar
         </Button>
-        <Button size="lg" className="text-lg px-10 py-7 gap-2 shadow-lg hover:shadow-primary/20 transition-all duration-300" onClick={() => setConfirmOpen(true)} disabled={scheduled && !scheduleDate}>
+        <Button size="lg" className="text-lg px-10 py-7 gap-2 shadow-lg hover:shadow-primary/20 transition-all duration-300" onClick={() => setConfirmOpen(true)} disabled={(scheduled && !scheduleDate) || total <= 0}>
           {scheduled ? (<><CalendarClock className="w-5 h-5" /> Agendar Disparo</>) : (<><Rocket className="w-5 h-5" /> Iniciar Disparos</>)}
         </Button>
       </div>
