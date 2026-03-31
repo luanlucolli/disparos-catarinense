@@ -35,6 +35,10 @@ let isAppQuitting = false
 function setupWhatsApp(mainWindow: BrowserWindow): void {
   let isInitializing = false
   let isClientStarted = false
+  
+  // NOVO: Trava para evitar conflito entre o Logout Manual e o Evento Automático
+  let isLoggingOut = false 
+  
   let client: Client | null = null
 
   // --- MEMÓRIA DE ESTADO ---
@@ -160,20 +164,29 @@ function setupWhatsApp(mainWindow: BrowserWindow): void {
     clientInstance.on('disconnected', async (reason: string) => {
       if (client !== clientInstance) return
       console.warn('[whatsapp] Cliente desconectado pelo celular:', reason)
+
+      // CORREÇÃO: Se estamos no meio de um logout manual, ignoramos esse evento
+      // para não tentar destruir o navegador duas vezes.
+      if (isLoggingOut) {
+        console.info('[whatsapp] Ignorando evento de desconexão pois um logout manual já está em andamento.')
+        return
+      }
+
       isClientStarted = false
       sendWhatsAppEvent({ type: 'disconnected', payload: reason })
 
-      // CORREÇÃO: Limpa o cliente morto e a sessão local, já que o acesso foi revogado na Meta
       await resetClient(true)
     })
 
     clientInstance.on('auth_failure', async (message: string) => {
       if (client !== clientInstance) return
       console.error('[whatsapp] Falha de autenticação:', message)
+      
+      if (isLoggingOut) return
+
       isClientStarted = false
       sendWhatsAppEvent({ type: 'disconnected', payload: message })
 
-      // CORREÇÃO: Limpa o cliente e a sessão inválida
       await resetClient(true)
     })
 
@@ -183,7 +196,6 @@ function setupWhatsApp(mainWindow: BrowserWindow): void {
   const destroyCurrentClient = async (): Promise<void> => {
     if (!client) return
     try {
-      // Dá tempo ao Puppeteer para encerrar graciosamente (evita o Target closed error)
       await client.destroy()
       console.info('[whatsapp] Navegador invisível encerrado graciosamente.')
     } catch (error) {
@@ -215,6 +227,7 @@ function setupWhatsApp(mainWindow: BrowserWindow): void {
     console.info('[whatsapp] Inicializando cliente')
     isInitializing = true
     isClientStarted = true
+    isLoggingOut = false // Garante que a trava comece desativada
 
     let timeoutHandle: NodeJS.Timeout | undefined
 
@@ -246,9 +259,6 @@ function setupWhatsApp(mainWindow: BrowserWindow): void {
         : messageBase
 
       sendWhatsAppEvent({ type: 'disconnected', payload: message })
-
-      // CORREÇÃO CRÍTICA: Sempre passamos FALSE no catch de inicialização. 
-      // Matamos o processo do Chrome que travou, mas preservamos a pasta de sessão.
       await resetClient(false)
 
     } finally {
@@ -263,6 +273,11 @@ function setupWhatsApp(mainWindow: BrowserWindow): void {
       return
     }
 
+    if (isLoggingOut) return // Previne duplos cliques no React
+
+    // Ativa a trava para silenciar os eventos automáticos
+    isLoggingOut = true 
+
     try {
       console.info('[whatsapp] Iniciando processo de LOGOUT real (Servidor + Local)...')
 
@@ -274,21 +289,18 @@ function setupWhatsApp(mainWindow: BrowserWindow): void {
       await Promise.race([logoutPromise, timeoutPromise])
       console.info('[whatsapp] Logout remoto concluído com sucesso.')
 
+    } catch (error) {
+      console.error('[whatsapp] Erro ao tentar deslogar no servidor da Meta:', error)
+    } finally {
+      // Limpeza local forçada em todos os cenários
       await destroyCurrentClient()
       await killChromiumSessionProcesses()
       clearSessionDirectory()
 
       isClientStarted = false
+      isLoggingOut = false // Desativa a trava
+      
       sendWhatsAppEvent({ type: 'disconnected', payload: 'Você foi desconectado com sucesso.' })
-
-    } catch (error) {
-      console.error('[whatsapp] Erro ao tentar deslogar no servidor da Meta:', error)
-      sendWhatsAppEvent({ type: 'ready', payload: lastUserInfo })
-
-      dialog.showErrorBox(
-        'Falha ao Desconectar',
-        'Não foi possível finalizar a sessão no servidor do WhatsApp. Sua sessão local foi mantida. Tente desconectar direto pelo celular.'
-      )
     }
   }
 
@@ -331,20 +343,15 @@ function setupWhatsApp(mainWindow: BrowserWindow): void {
   // --- O NOVO MOTOR DE DESLIGAMENTO SEGURO ---
   app.on('before-quit', async (event) => {
     if (!isAppQuitting) {
-      // 1. Pausa o fechamento do Windows
       event.preventDefault()
       isAppQuitting = true
 
       console.info('\n[sistema] Encerrando o aplicativo. Salvando sessão do WhatsApp com segurança...')
 
-      // 2. Fecha o WhatsApp educadamente (salva os arquivos)
       await destroyCurrentClient()
-
-      // 3. Varre qualquer lixo que sobrou para evitar arquivos travados
       await killChromiumSessionProcesses()
       clearChromiumSessionLocks()
 
-      // 4. Libera o fechamento do aplicativo
       console.info('[sistema] Fechamento seguro concluído. Até logo!')
       app.quit()
     }
@@ -435,10 +442,10 @@ function registerDatabaseIpcHandlers(): void {
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
-    width: 1024,           // Aumentado para o padrão desktop
-    height: 768,           // Aumentado para dar respiro vertical
-    minWidth: 900,         // Limite mínimo para não quebrar tabelas
-    minHeight: 650,        // Limite mínimo vertical
+    width: 1024,
+    height: 768,
+    minWidth: 900,
+    minHeight: 650,
     show: false,
     autoHideMenuBar: true,
     icon: icon,
