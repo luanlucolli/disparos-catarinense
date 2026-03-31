@@ -238,7 +238,7 @@ function setupWhatsApp(mainWindow: BrowserWindow): void {
     } catch (error) {
       console.error('[whatsapp] Erro ao inicializar:', error)
       isClientStarted = false
-      
+
       const isTimeoutError = error instanceof Error && error.message.includes('Tempo limite')
       const messageBase = error instanceof Error ? error.message : 'Falha ao inicializar cliente do WhatsApp.'
       const message = isTimeoutError
@@ -439,7 +439,8 @@ function createWindow(): void {
     height: 670,
     show: false,
     autoHideMenuBar: true,
-    ...(process.platform === 'linux' ? { icon } : {}),
+    // Remova a condicional de platform === 'linux' e aplique para todos
+    icon: icon, 
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false

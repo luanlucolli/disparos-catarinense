@@ -1,7 +1,9 @@
 appId: com.electron.app
-productName: disparos-catarinense
+productName: Disparos Catarinense
 directories:
+  # Pasta onde o builder buscará o icon.ico e icon.icns automaticamente
   buildResources: build
+  output: dist
 files:
   - '!**/.vscode/*'
   - '!src/*'
@@ -13,31 +15,34 @@ asarUnpack:
   - resources/**
 win:
   executableName: disparos-catarinense
+  # Garante que o ícone seja aplicado ao executável Windows
+  icon: build/icon.ico
+  target:
+    - target: nsis
+      arch:
+        - x64
 nsis:
-  artifactName: ${name}-${version}-setup.${ext}
+  artifactName: ${productName}-${version}-setup.${ext}
   shortcutName: ${productName}
   uninstallDisplayName: ${productName}
   createDesktopShortcut: always
+  # Ícone que aparece no instalador .exe
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
 mac:
+  icon: build/icon.icns
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:
     - NSCameraUsageDescription: Application requests access to the device's camera.
     - NSMicrophoneUsageDescription: Application requests access to the device's microphone.
-    - NSDocumentsFolderUsageDescription: Application requests access to the user's Documents folder.
-    - NSDownloadsFolderUsageDescription: Application requests access to the user's Downloads folder.
   notarize: false
-dmg:
-  artifactName: ${name}-${version}.${ext}
 linux:
+  icon: build/icon.png
   target:
     - AppImage
-    - snap
     - deb
-  maintainer: electronjs.org
+  maintainer: disparos-catarinense.com.br
   category: Utility
-appImage:
-  artifactName: ${name}-${version}.${ext}
-npmRebuild: false
 publish:
   provider: generic
   url: https://example.com/auto-updates
