@@ -2,6 +2,14 @@ import { app } from 'electron'
 import Database from 'better-sqlite3'
 import { join } from 'path'
 
+export type CampaignStatus =
+  | 'Concluído'
+  | 'Pausado'
+  | 'Falhou'
+  | 'Em andamento'
+  | 'Aguardando'
+  | 'Agendado'
+
 export type TemplateInput = {
   id: string
   title: string
@@ -28,23 +36,41 @@ type TemplateRow = {
 export type CampaignInput = {
   id: string
   name: string
-  status: string
+  status: CampaignStatus
   total_contacts: number
   sent_count?: number
   success_count?: number
   failed_count?: number
+  config?: unknown
+  messages?: unknown
 }
 
 export type CampaignRecord = {
   id: string
   name: string
-  status: string
+  status: CampaignStatus
   total_contacts: number
   sent_count: number
   success_count: number
   failed_count: number
   created_at: string
   finished_at: string | null
+  config?: unknown
+  messages?: unknown
+}
+
+type CampaignRow = {
+  id: string
+  name: string
+  status: CampaignStatus
+  total_contacts: number
+  sent_count: number
+  success_count: number
+  failed_count: number
+  created_at: string
+  finished_at: string | null
+  config: string | null
+  messages: string | null
 }
 
 export type CampaignContactInput = {
@@ -67,20 +93,24 @@ export type CampaignProgress = {
   failed: number
 }
 
-let db: InstanceType<typeof Database> | null = null
+type DatabaseInstance = InstanceType<typeof Database>
 
-const parseTemplateDoc = (doc: string | null): unknown | undefined => {
-  if (!doc) return undefined
+let db: DatabaseInstance | null = null
+
+const parseJson = <T>(value: string | null): T | undefined => {
+  if (!value) {
+    return undefined
+  }
 
   try {
-    return JSON.parse(doc)
+    return JSON.parse(value) as T
   } catch {
     return undefined
   }
 }
 
 const mapTemplateRow = (row: TemplateRow): TemplateRecord => {
-  const parsedDoc = parseTemplateDoc(row.doc)
+  const parsedDoc = parseJson<unknown>(row.doc)
 
   return {
     id: row.id,
@@ -91,7 +121,40 @@ const mapTemplateRow = (row: TemplateRow): TemplateRecord => {
   }
 }
 
-const initializeDatabase = (): InstanceType<typeof Database> => {
+const mapCampaignRow = (row: CampaignRow): CampaignRecord => {
+  const parsedConfig = parseJson<unknown>(row.config)
+  const parsedMessages = parseJson<unknown>(row.messages)
+
+  return {
+    id: row.id,
+    name: row.name,
+    status: row.status,
+    total_contacts: row.total_contacts,
+    sent_count: row.sent_count ?? 0,
+    success_count: row.success_count ?? 0,
+    failed_count: row.failed_count ?? 0,
+    created_at: row.created_at,
+    finished_at: row.finished_at,
+    ...(parsedConfig !== undefined ? { config: parsedConfig } : {}),
+    ...(parsedMessages !== undefined ? { messages: parsedMessages } : {})
+  }
+}
+
+const ensureCampaignColumns = (database: DatabaseInstance): void => {
+  const columns = database.prepare('PRAGMA table_info(campaigns)').all() as Array<{ name: string }>
+  const hasConfig = columns.some((column) => column.name === 'config')
+  const hasMessages = columns.some((column) => column.name === 'messages')
+
+  if (!hasConfig) {
+    database.exec('ALTER TABLE campaigns ADD COLUMN config TEXT')
+  }
+
+  if (!hasMessages) {
+    database.exec('ALTER TABLE campaigns ADD COLUMN messages TEXT')
+  }
+}
+
+const initializeDatabase = (): DatabaseInstance => {
   const databasePath = join(app.getPath('userData'), 'database.sqlite')
   const database = new Database(databasePath)
 
@@ -116,7 +179,9 @@ const initializeDatabase = (): InstanceType<typeof Database> => {
       success_count INTEGER,
       failed_count INTEGER,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      finished_at DATETIME
+      finished_at DATETIME,
+      config TEXT,
+      messages TEXT
     );
 
     CREATE TABLE IF NOT EXISTS campaign_contacts (
@@ -130,10 +195,12 @@ const initializeDatabase = (): InstanceType<typeof Database> => {
     );
   `)
 
+  ensureCampaignColumns(database)
+
   return database
 }
 
-const getDb = (): InstanceType<typeof Database> => {
+const getDb = (): DatabaseInstance => {
   if (!db) {
     db = initializeDatabase()
   }
@@ -187,7 +254,7 @@ export const deleteTemplate = (id: string): boolean => {
 export const getCampaigns = (): CampaignRecord[] => {
   const database = getDb()
 
-  return database
+  const rows = database
     .prepare(
       `SELECT
         id,
@@ -198,17 +265,21 @@ export const getCampaigns = (): CampaignRecord[] => {
         success_count,
         failed_count,
         created_at,
-        finished_at
+        finished_at,
+        config,
+        messages
        FROM campaigns
        ORDER BY created_at DESC`
     )
-    .all() as CampaignRecord[]
+    .all() as CampaignRow[]
+
+  return rows.map(mapCampaignRow)
 }
 
 export const getCampaignById = (campaignId: string): CampaignRecord | null => {
   const database = getDb()
 
-  const record = database
+  const row = database
     .prepare(
       `SELECT
         id,
@@ -219,13 +290,68 @@ export const getCampaignById = (campaignId: string): CampaignRecord | null => {
         success_count,
         failed_count,
         created_at,
-        finished_at
+        finished_at,
+        config,
+        messages
        FROM campaigns
        WHERE id = ?`
     )
-    .get(campaignId) as CampaignRecord | undefined
+    .get(campaignId) as CampaignRow | undefined
 
-  return record ?? null
+  return row ? mapCampaignRow(row) : null
+}
+
+export const getCampaignsByStatus = (status: CampaignStatus): CampaignRecord[] => {
+  const database = getDb()
+
+  const rows = database
+    .prepare(
+      `SELECT
+        id,
+        name,
+        status,
+        total_contacts,
+        sent_count,
+        success_count,
+        failed_count,
+        created_at,
+        finished_at,
+        config,
+        messages
+       FROM campaigns
+       WHERE status = ?
+       ORDER BY created_at ASC`
+    )
+    .all(status) as CampaignRow[]
+
+  return rows.map(mapCampaignRow)
+}
+
+export const getOldestCampaignByStatus = (status: CampaignStatus): CampaignRecord | null => {
+  const database = getDb()
+
+  const row = database
+    .prepare(
+      `SELECT
+        id,
+        name,
+        status,
+        total_contacts,
+        sent_count,
+        success_count,
+        failed_count,
+        created_at,
+        finished_at,
+        config,
+        messages
+       FROM campaigns
+       WHERE status = ?
+       ORDER BY created_at ASC
+       LIMIT 1`
+    )
+    .get(status) as CampaignRow | undefined
+
+  return row ? mapCampaignRow(row) : null
 }
 
 export const getCampaignContacts = (campaignId: string): CampaignContactRecord[] => {
@@ -265,7 +391,9 @@ export const createCampaign = (campaign: CampaignInput, contacts: CampaignContac
       total_contacts,
       sent_count,
       success_count,
-      failed_count
+      failed_count,
+      config,
+      messages
     ) VALUES (
       @id,
       @name,
@@ -273,7 +401,9 @@ export const createCampaign = (campaign: CampaignInput, contacts: CampaignContac
       @total_contacts,
       @sent_count,
       @success_count,
-      @failed_count
+      @failed_count,
+      @config,
+      @messages
     )`
   )
 
@@ -284,10 +414,15 @@ export const createCampaign = (campaign: CampaignInput, contacts: CampaignContac
 
   const transaction = database.transaction((campaignData: CampaignInput, campaignContacts: CampaignContactInput[]) => {
     insertCampaign.run({
-      ...campaignData,
+      id: campaignData.id,
+      name: campaignData.name,
+      status: campaignData.status,
+      total_contacts: campaignData.total_contacts,
       sent_count: campaignData.sent_count ?? 0,
       success_count: campaignData.success_count ?? 0,
-      failed_count: campaignData.failed_count ?? 0
+      failed_count: campaignData.failed_count ?? 0,
+      config: campaignData.config === undefined ? null : JSON.stringify(campaignData.config),
+      messages: campaignData.messages === undefined ? null : JSON.stringify(campaignData.messages)
     })
 
     for (const contact of campaignContacts) {
@@ -301,22 +436,7 @@ export const createCampaign = (campaign: CampaignInput, contacts: CampaignContac
 
   transaction(campaign, contacts)
 
-  const createdCampaign = database
-    .prepare(
-      `SELECT
-        id,
-        name,
-        status,
-        total_contacts,
-        sent_count,
-        success_count,
-        failed_count,
-        created_at,
-        finished_at
-       FROM campaigns
-       WHERE id = ?`
-    )
-    .get(campaign.id) as CampaignRecord | undefined
+  const createdCampaign = getCampaignById(campaign.id)
 
   if (!createdCampaign) {
     throw new Error('Falha ao criar campanha no banco de dados.')
@@ -325,16 +445,48 @@ export const createCampaign = (campaign: CampaignInput, contacts: CampaignContac
   return createdCampaign
 }
 
-export const updateCampaignStatus = (campaignId: string, status: string): boolean => {
+export const updateCampaignStatus = (campaignId: string, status: CampaignStatus): boolean => {
+  const database = getDb()
+
+  const shouldClearFinishedAt = status !== 'Concluído' && status !== 'Falhou'
+
+  const result = shouldClearFinishedAt
+    ? database
+        .prepare(
+          `UPDATE campaigns
+           SET
+             status = ?,
+             finished_at = NULL
+           WHERE id = ?`
+        )
+        .run(status, campaignId)
+    : database
+        .prepare(
+          `UPDATE campaigns
+           SET status = ?
+           WHERE id = ?`
+        )
+        .run(status, campaignId)
+
+  return result.changes > 0
+}
+
+export const updateCampaignPayload = (campaignId: string, config: unknown, messages: unknown): boolean => {
   const database = getDb()
 
   const result = database
     .prepare(
       `UPDATE campaigns
-       SET status = ?
+       SET
+         config = ?,
+         messages = ?
        WHERE id = ?`
     )
-    .run(status, campaignId)
+    .run(
+      config === undefined ? null : JSON.stringify(config),
+      messages === undefined ? null : JSON.stringify(messages),
+      campaignId
+    )
 
   return result.changes > 0
 }
@@ -381,7 +533,7 @@ export const updateCampaignContactStatus = (
 
 export const finishCampaign = (
   campaignId: string,
-  status: string,
+  status: CampaignStatus,
   sentCount: number,
   successCount: number,
   failedCount: number

@@ -2,15 +2,23 @@ import type { Client } from 'whatsapp-web.js'
 import {
   finishCampaign,
   getCampaignById,
+  getCampaignsByStatus,
+  getOldestCampaignByStatus,
   getPendingCampaignContacts,
   updateCampaignContactStatus,
+  updateCampaignPayload,
   updateCampaignProgress,
   updateCampaignStatus,
-  type CampaignContactRecord
+  type CampaignContactRecord,
+  type CampaignRecord
 } from './database'
 import { compileMessageForContact } from './MessageParser'
 
-// Serviço de fila em memória: controla start/pause/resume/cancel e sincroniza progresso no SQLite + IPC.
+const SCHEDULER_INTERVAL_MS = 60_000
+const SCHEDULER_TOLERANCE_MS = 90_000
+const OFFLINE_SCHEDULE_FAILURE_LOG =
+  '[Sistema] Campanha cancelada: O aplicativo estava fechado no horário agendado.'
+
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => {
     setTimeout(resolve, ms)
@@ -74,6 +82,15 @@ const formatClock = (date: Date): string => {
   return `${hours}:${minutes}:${seconds}`
 }
 
+const formatDateTime = (date: Date): string => {
+  const day = String(date.getDate()).padStart(2, '0')
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const year = date.getFullYear()
+  const hour = String(date.getHours()).padStart(2, '0')
+  const minute = String(date.getMinutes()).padStart(2, '0')
+  return `${day}/${month}/${year} ${hour}:${minute}`
+}
+
 const nowTag = (): string => `[${formatClock(new Date())}]`
 
 const safeMessage = (error: unknown): string => {
@@ -89,15 +106,93 @@ const toPositiveNumber = (value: unknown, fallback: number): number => {
   return numeric
 }
 
+const parseClockUnit = (value: unknown, fallback: number, max: number): number => {
+  const numeric = Number.parseInt(String(value ?? ''), 10)
+
+  if (!Number.isFinite(numeric) || numeric < 0) {
+    return fallback
+  }
+
+  return Math.min(max, numeric)
+}
+
+const isObjectRecord = (value: unknown): value is Record<string, unknown> => {
+  return typeof value === 'object' && value !== null
+}
+
 export class CampaignService {
   private campaigns = new Map<string, CampaignState>()
 
+  private schedulerInterval: NodeJS.Timeout | null = null
+
   constructor(private readonly dependencies: CampaignServiceDependencies) {}
 
-  async startCampaign(campaignId: string, config: CampaignServiceConfig, messages: unknown[]): Promise<boolean> {
+  initScheduler(): void {
+    if (this.schedulerInterval) {
+      return
+    }
+
+    this.schedulerInterval = setInterval(() => {
+      void this.runSchedulerTick()
+    }, SCHEDULER_INTERVAL_MS)
+
+    void this.runSchedulerTick()
+    void this.processNextInQueue()
+  }
+
+  async enqueueCampaign(
+    campaignId: string,
+    config?: CampaignServiceConfig | null,
+    messages?: unknown[] | null
+  ): Promise<boolean> {
+    const campaign = getCampaignById(campaignId)
+    if (!campaign) {
+      throw new Error('Campanha não encontrada no banco local.')
+    }
+
+    const resolvedConfig = this.normalizeConfig(config ?? campaign.config)
+    const resolvedMessages = this.normalizeMessages(messages ?? campaign.messages)
+
+    if (resolvedMessages.length === 0) {
+      throw new Error('Nenhuma mensagem válida foi encontrada para enfileirar a campanha.')
+    }
+
+    updateCampaignPayload(campaignId, resolvedConfig, resolvedMessages)
+
+    const scheduledAt = this.resolveScheduledDate(resolvedConfig)
+    if (scheduledAt && scheduledAt.getTime() > Date.now()) {
+      updateCampaignStatus(campaignId, 'Agendado')
+      this.emitDetachedProgress(campaign, {
+        status: 'Agendado',
+        log: `${nowTag()} 📅 Campanha agendada para ${formatDateTime(scheduledAt)}.`
+      })
+      return true
+    }
+
+    if (this.hasAnotherRunningCampaign(campaignId)) {
+      updateCampaignStatus(campaignId, 'Aguardando')
+      this.emitDetachedProgress(campaign, {
+        status: 'Aguardando',
+        log: `${nowTag()} 🕒 Campanha adicionada à fila de envio.`
+      })
+      return true
+    }
+
+    return this.startCampaign(campaignId, resolvedConfig, resolvedMessages)
+  }
+
+  async startCampaign(
+    campaignId: string,
+    config?: CampaignServiceConfig | null,
+    messages?: unknown[] | null
+  ): Promise<boolean> {
     const existing = this.campaigns.get(campaignId)
     if (existing?.running) {
       throw new Error('Esta campanha já está em execução.')
+    }
+
+    if (this.hasAnotherRunningCampaign(campaignId)) {
+      throw new Error('Já existe uma campanha em execução. Pause ou aguarde a conclusão dela antes de iniciar outra.')
     }
 
     const campaign = getCampaignById(campaignId)
@@ -105,14 +200,18 @@ export class CampaignService {
       throw new Error('Campanha não encontrada no banco local.')
     }
 
+    const resolvedConfig = this.normalizeConfig(config ?? campaign.config)
+    const resolvedMessages = this.normalizeMessages(messages ?? campaign.messages)
+
+    if (resolvedMessages.length === 0) {
+      throw new Error('Nenhuma mensagem válida foi enviada para iniciar a campanha.')
+    }
+
     if (!this.dependencies.getClient()) {
       throw new Error('Cliente WhatsApp indisponível. Conecte-se antes de iniciar a campanha.')
     }
 
-    const normalizedMessages = Array.isArray(messages) ? messages.filter(Boolean) : []
-    if (normalizedMessages.length === 0) {
-      throw new Error('Nenhuma mensagem válida foi enviada para iniciar a campanha.')
-    }
+    updateCampaignPayload(campaignId, resolvedConfig, resolvedMessages)
 
     const runtime: CampaignState = {
       campaignId,
@@ -127,7 +226,13 @@ export class CampaignService {
 
     this.campaigns.set(campaignId, runtime)
 
-    void this.runCampaign(runtime, config, normalizedMessages)
+    updateCampaignStatus(runtime.campaignId, 'Em andamento')
+    this.emit(runtime, {
+      status: 'Em andamento',
+      log: `${nowTag()} 🚀 Campanha iniciada.`
+    })
+
+    void this.runCampaign(runtime, resolvedConfig, resolvedMessages)
     return true
   }
 
@@ -148,6 +253,10 @@ export class CampaignService {
   }
 
   async resumeCampaign(campaignId: string): Promise<boolean> {
+    if (this.hasAnotherRunningCampaign(campaignId)) {
+      throw new Error('Já existe uma campanha em execução. Pause ou aguarde a conclusão dela antes de iniciar outra.')
+    }
+
     const runtime = this.campaigns.get(campaignId)
 
     if (runtime && runtime.running) {
@@ -161,7 +270,23 @@ export class CampaignService {
       return true
     }
 
-    return updateCampaignStatus(campaignId, 'Em andamento')
+    const campaign = getCampaignById(campaignId)
+    if (!campaign) {
+      return false
+    }
+
+    if (campaign.status !== 'Pausado' && campaign.status !== 'Aguardando' && campaign.status !== 'Agendado') {
+      return false
+    }
+
+    const storedConfig = this.normalizeConfig(campaign.config)
+    const storedMessages = this.normalizeMessages(campaign.messages)
+
+    if (storedMessages.length === 0) {
+      throw new Error('Esta campanha não possui mensagens válidas para retomar.')
+    }
+
+    return this.startCampaign(campaignId, storedConfig, storedMessages)
   }
 
   async cancelCampaign(campaignId: string): Promise<boolean> {
@@ -191,38 +316,93 @@ export class CampaignService {
       campaign.failed_count ?? 0
     )
 
-    this.dependencies.emitProgress({
-      campaignId,
-      sent: campaign.sent_count ?? 0,
-      success: campaign.success_count ?? 0,
-      failed: campaign.failed_count ?? 0,
+    this.emitDetachedProgress(campaign, {
       status: 'Falhou',
-      finishedAt: new Date().toISOString(),
-      log: `${nowTag()} ❌ Campanha finalizada como falha.`
+      log: `${nowTag()} ❌ Campanha finalizada como falha.`,
+      finishedAt: new Date().toISOString()
     })
 
     return true
   }
 
-  private async runCampaign(runtime: CampaignState, config: CampaignServiceConfig, messages: unknown[]): Promise<void> {
+  async processNextInQueue(): Promise<boolean> {
+    if (this.hasAnotherRunningCampaign()) {
+      return false
+    }
+
+    if (!this.dependencies.getClient()) {
+      return false
+    }
+
+    while (!this.hasAnotherRunningCampaign()) {
+      const nextCampaign = getOldestCampaignByStatus('Aguardando')
+
+      if (!nextCampaign) {
+        return false
+      }
+
+      const nextConfig = this.normalizeConfig(nextCampaign.config)
+      const nextMessages = this.normalizeMessages(nextCampaign.messages)
+
+      if (nextMessages.length === 0) {
+        finishCampaign(
+          nextCampaign.id,
+          'Falhou',
+          nextCampaign.sent_count ?? 0,
+          nextCampaign.success_count ?? 0,
+          nextCampaign.failed_count ?? 0
+        )
+
+        this.emitDetachedProgress(nextCampaign, {
+          status: 'Falhou',
+          log: `${nowTag()} ❌ Campanha removida da fila: nenhuma mensagem válida encontrada.`,
+          finishedAt: new Date().toISOString()
+        })
+
+        continue
+      }
+
+      try {
+        return await this.startCampaign(nextCampaign.id, nextConfig, nextMessages)
+      } catch (error) {
+        const errorMessage = safeMessage(error)
+
+        if (
+          errorMessage.includes('Cliente WhatsApp indisponível') ||
+          errorMessage.includes('Já existe uma campanha em execução') ||
+          errorMessage.includes('Esta campanha já está em execução')
+        ) {
+          return false
+        }
+
+        finishCampaign(
+          nextCampaign.id,
+          'Falhou',
+          nextCampaign.sent_count ?? 0,
+          nextCampaign.success_count ?? 0,
+          nextCampaign.failed_count ?? 0
+        )
+
+        this.emitDetachedProgress(nextCampaign, {
+          status: 'Falhou',
+          log: `${nowTag()} ❌ Erro ao iniciar campanha da fila: ${errorMessage}`,
+          finishedAt: new Date().toISOString()
+        })
+      }
+    }
+
+    return false
+  }
+
+  private async runCampaign(
+    runtime: CampaignState,
+    config: CampaignServiceConfig,
+    messages: unknown[]
+  ): Promise<void> {
     let finalStatus: 'Concluído' | 'Falhou' | null = null
     let finalLog = ''
 
     try {
-      await this.waitForScheduledStart(runtime, config)
-
-      if (runtime.cancelled) {
-        finalStatus = 'Falhou'
-        finalLog = `${nowTag()} ❌ Campanha cancelada antes de iniciar.`
-        return
-      }
-
-      updateCampaignStatus(runtime.campaignId, 'Em andamento')
-      this.emit(runtime, {
-        status: 'Em andamento',
-        log: `${nowTag()} 🚀 Campanha iniciada.`
-      })
-
       const pendingContacts = getPendingCampaignContacts(runtime.campaignId)
       if (pendingContacts.length === 0) {
         finalStatus = 'Concluído'
@@ -315,6 +495,79 @@ export class CampaignService {
           finishedAt: new Date().toISOString()
         })
       }
+
+      try {
+        await this.processNextInQueue()
+      } catch (queueError) {
+        console.error('[campaign] Erro ao processar próxima campanha da fila:', queueError)
+      }
+    }
+  }
+
+  private async runSchedulerTick(): Promise<void> {
+    try {
+      const scheduledCampaigns = getCampaignsByStatus('Agendado')
+      const now = Date.now()
+      let queueUpdated = false
+
+      for (const campaign of scheduledCampaigns) {
+        const config = this.normalizeConfig(campaign.config)
+        const scheduledDate = this.resolveScheduledDate(config)
+
+        if (!scheduledDate) {
+          finishCampaign(
+            campaign.id,
+            'Falhou',
+            campaign.sent_count ?? 0,
+            campaign.success_count ?? 0,
+            campaign.failed_count ?? 0
+          )
+
+          this.emitDetachedProgress(campaign, {
+            status: 'Falhou',
+            log: `${nowTag()} ❌ Campanha cancelada: configuração de agendamento inválida.`,
+            finishedAt: new Date().toISOString()
+          })
+          continue
+        }
+
+        const scheduledAt = scheduledDate.getTime()
+        const delayAfterSchedule = now - scheduledAt
+
+        if (delayAfterSchedule > SCHEDULER_TOLERANCE_MS) {
+          finishCampaign(
+            campaign.id,
+            'Falhou',
+            campaign.sent_count ?? 0,
+            campaign.success_count ?? 0,
+            campaign.failed_count ?? 0
+          )
+
+          this.emitDetachedProgress(campaign, {
+            status: 'Falhou',
+            log: `${nowTag()} ${OFFLINE_SCHEDULE_FAILURE_LOG}`,
+            finishedAt: new Date().toISOString()
+          })
+          continue
+        }
+
+        if (scheduledAt <= now + 1000) {
+          updateCampaignStatus(campaign.id, 'Aguardando')
+
+          this.emitDetachedProgress(campaign, {
+            status: 'Aguardando',
+            log: `${nowTag()} ⏰ Horário atingido. Campanha movida para a fila.`
+          })
+
+          queueUpdated = true
+        }
+      }
+
+      if (queueUpdated || !this.hasAnotherRunningCampaign()) {
+        await this.processNextInQueue()
+      }
+    } catch (error) {
+      console.error('[campaign] Erro no scheduler de campanhas:', error)
     }
   }
 
@@ -351,7 +604,6 @@ export class CampaignService {
     const formattedNumber = `${normalizedNumber}@c.us`
 
     try {
-      // Proteção anti-ban: valida registro real do número no WhatsApp antes de enviar.
       const numberId = await client.getNumberId(formattedNumber)
       const targetId = numberId?._serialized ?? formattedNumber
 
@@ -371,7 +623,6 @@ export class CampaignService {
       const finalMessage = parsedMessage || 'Olá, tudo bem?'
 
       if (config.simulateTyping) {
-        // Comportamento humano anti-ban: 70% envia "digitando...", 30% apenas aguarda em silêncio.
         const typingDelay = this.calculateTypingDelay(finalMessage)
         const shouldShowTyping = Math.random() > 0.3
 
@@ -412,13 +663,80 @@ export class CampaignService {
     }
   }
 
-  private emit(runtime: CampaignState, payload: Omit<CampaignProgressEvent, 'campaignId' | 'sent' | 'success' | 'failed'>): void {
+  private emit(
+    runtime: CampaignState,
+    payload: Omit<CampaignProgressEvent, 'campaignId' | 'sent' | 'success' | 'failed'>
+  ): void {
     this.dependencies.emitProgress({
       campaignId: runtime.campaignId,
       sent: runtime.sent,
       success: runtime.success,
       failed: runtime.failed,
       ...payload
+    })
+  }
+
+  private emitDetachedProgress(
+    campaign: Pick<CampaignRecord, 'id' | 'sent_count' | 'success_count' | 'failed_count'>,
+    payload: Omit<CampaignProgressEvent, 'campaignId' | 'sent' | 'success' | 'failed'>
+  ): void {
+    this.dependencies.emitProgress({
+      campaignId: campaign.id,
+      sent: campaign.sent_count ?? 0,
+      success: campaign.success_count ?? 0,
+      failed: campaign.failed_count ?? 0,
+      ...payload
+    })
+  }
+
+  private hasAnotherRunningCampaign(campaignId?: string): boolean {
+    return Array.from(this.campaigns.values()).some((campaignState) => {
+      const sameCampaign = campaignId ? campaignState.campaignId === campaignId : false
+      return campaignState.running && !campaignState.paused && !sameCampaign
+    })
+  }
+
+  private normalizeConfig(config: unknown): CampaignServiceConfig {
+    const source = isObjectRecord(config) ? (config as Partial<CampaignServiceConfig>) : {}
+
+    const rawMin = toPositiveNumber(source.minDelay, 15)
+    const rawMax = toPositiveNumber(source.maxDelay, 30)
+    const minDelay = Math.min(rawMin, rawMax)
+    const maxDelay = Math.max(rawMin, rawMax)
+
+    const scheduleDate = source.scheduleDate ?? null
+    const scheduleHour = String(parseClockUnit(source.scheduleHour, 9, 23)).padStart(2, '0')
+    const scheduleMinute = String(parseClockUnit(source.scheduleMinute, 0, 59)).padStart(2, '0')
+
+    return {
+      minDelay,
+      maxDelay,
+      cooldownEnabled: Boolean(source.cooldownEnabled),
+      cooldownMinutes: toPositiveNumber(source.cooldownMinutes, 5),
+      cooldownEvery: toPositiveNumber(source.cooldownEvery, 20),
+      simulateTyping: source.simulateTyping !== false,
+      scheduled: Boolean(source.scheduled),
+      scheduleDate,
+      scheduleHour,
+      scheduleMinute
+    }
+  }
+
+  private normalizeMessages(messages: unknown): unknown[] {
+    if (!Array.isArray(messages)) {
+      return []
+    }
+
+    return messages.filter((message) => {
+      if (message === null || message === undefined) {
+        return false
+      }
+
+      if (typeof message === 'string') {
+        return message.trim().length > 0
+      }
+
+      return true
     })
   }
 
@@ -457,35 +775,23 @@ export class CampaignService {
     }
   }
 
-  private async waitForScheduledStart(runtime: CampaignState, config: CampaignServiceConfig): Promise<void> {
+  private resolveScheduledDate(config: CampaignServiceConfig): Date | null {
     if (!config.scheduled || !config.scheduleDate) {
-      return
+      return null
     }
 
     const scheduleBase = new Date(config.scheduleDate)
     if (Number.isNaN(scheduleBase.getTime())) {
-      return
+      return null
     }
 
-    const hour = Number(config.scheduleHour ?? '0')
-    const minute = Number(config.scheduleMinute ?? '0')
+    const hour = parseClockUnit(config.scheduleHour, 0, 23)
+    const minute = parseClockUnit(config.scheduleMinute, 0, 59)
 
     const scheduledTime = new Date(scheduleBase)
-    scheduledTime.setHours(Number.isFinite(hour) ? hour : 0, Number.isFinite(minute) ? minute : 0, 0, 0)
+    scheduledTime.setHours(hour, minute, 0, 0)
 
-    const waitMs = scheduledTime.getTime() - Date.now()
-
-    if (waitMs <= 0) {
-      return
-    }
-
-    updateCampaignStatus(runtime.campaignId, 'Pausado')
-    this.emit(runtime, {
-      status: 'Pausado',
-      log: `${nowTag()} ⏳ Campanha agendada para ${formatClock(scheduledTime)}.`
-    })
-
-    await this.delayWithControls(runtime, waitMs)
+    return scheduledTime
   }
 
   private randomBetweenSeconds(minDelay: number, maxDelay: number): number {
@@ -516,7 +822,6 @@ export class CampaignService {
   }
 
   private calculateTypingDelay(message: string): number {
-    const baseDelay = Math.max(800, Math.min(15000, message.length * 50))
-    return baseDelay
+    return Math.max(800, Math.min(15_000, message.length * 50))
   }
 }

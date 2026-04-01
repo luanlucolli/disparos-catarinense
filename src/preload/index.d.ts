@@ -21,14 +21,18 @@ type TemplateRecord = TemplatePayload & {
   created_at: string
 }
 
+type CampaignStatus = 'Concluído' | 'Pausado' | 'Falhou' | 'Em andamento' | 'Aguardando' | 'Agendado'
+
 type CampaignPayload = {
   id: string
   name: string
-  status: string
+  status: CampaignStatus
   total_contacts: number
   sent_count?: number
   success_count?: number
   failed_count?: number
+  config?: unknown
+  messages?: unknown
 }
 
 type CampaignRecord = Required<Pick<CampaignPayload, 'sent_count' | 'success_count' | 'failed_count'>> &
@@ -92,11 +96,12 @@ interface AppAPI {
   getCampaignContacts: (campaignId: string) => Promise<CampaignContactRecord[]>
   finishCampaign: (
     campaignId: string,
-    status: string,
+    status: CampaignStatus,
     sentCount: number,
     successCount: number,
     failedCount: number
   ) => Promise<boolean>
+  enqueueCampaign: (campaignId: string, config: CampaignServiceConfig, messages: unknown[]) => Promise<boolean>
   startCampaign: (campaignId: string, config: CampaignServiceConfig, messages: unknown[]) => Promise<boolean>
   pauseCampaign: (campaignId: string) => Promise<boolean>
   resumeCampaign: (campaignId: string) => Promise<boolean>

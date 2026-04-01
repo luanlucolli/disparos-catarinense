@@ -30,12 +30,20 @@ import {
   CheckCircle2,
   XOctagon,
   Clock,
+  Clock3,
+  CalendarClock,
   Users,
   ArrowRight,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
-export type CampaignStatus = "Concluído" | "Pausado" | "Falhou" | "Em andamento";
+export type CampaignStatus =
+  | "Concluído"
+  | "Pausado"
+  | "Falhou"
+  | "Em andamento"
+  | "Aguardando"
+  | "Agendado";
 
 export interface Campaign {
   id: string;
@@ -48,6 +56,7 @@ export interface Campaign {
   status: CampaignStatus;
   startTime: string;
   endTime?: string;
+  config?: unknown;
 }
 
 type CampaignDbRecord = Awaited<ReturnType<Window["api"]["getCampaigns"]>>[number];
@@ -59,6 +68,8 @@ type CampaignProgressData = Parameters<Window["api"]["onCampaignProgress"]>[0] e
   : never;
 
 const defaultCampaigns: Campaign[] = [];
+const OFFLINE_SCHEDULE_FAILURE_LOG =
+  "[Sistema] Campanha cancelada: O aplicativo estava fechado no horário agendado.";
 
 const parseSQLiteDate = (value: string | null | undefined): Date | null => {
   if (!value) return null;
@@ -81,8 +92,24 @@ const formatTime = (date: Date | null): string => {
 
 const nowClock = (): string => formatTime(new Date());
 
+const isObjectRecord = (value: unknown): value is Record<string, unknown> => {
+  return typeof value === "object" && value !== null;
+};
+
+const isScheduledConfig = (value: unknown): boolean => {
+  if (!isObjectRecord(value)) return false;
+  return Boolean(value.scheduled);
+};
+
 const normalizeStatus = (status?: string): CampaignStatus => {
-  if (status === "Concluído" || status === "Pausado" || status === "Falhou" || status === "Em andamento") {
+  if (
+    status === "Concluído" ||
+    status === "Pausado" ||
+    status === "Falhou" ||
+    status === "Em andamento" ||
+    status === "Aguardando" ||
+    status === "Agendado"
+  ) {
     return status;
   }
 
@@ -104,6 +131,7 @@ const mapDbCampaignToUi = (campaign: CampaignDbRecord): Campaign => {
     status: normalizeStatus(campaign.status),
     startTime: formatTime(createdAt),
     endTime: finishedAt ? formatTime(finishedAt) : undefined,
+    config: campaign.config,
   };
 };
 
@@ -117,6 +145,18 @@ function statusBadge(status: CampaignStatus) {
       return <Badge className="bg-destructive/10 text-destructive hover:bg-destructive/20 border-0">❌ Falhou</Badge>;
     case "Em andamento":
       return <Badge className="bg-primary/10 text-primary hover:bg-primary/20 border-0 animate-pulse">🔄 Em andamento</Badge>;
+    case "Aguardando":
+      return (
+        <Badge className="bg-amber-500/15 text-amber-700 hover:bg-amber-500/25 border-0 dark:text-amber-300 gap-1.5">
+          <Clock3 className="h-3.5 w-3.5" /> Aguardando
+        </Badge>
+      );
+    case "Agendado":
+      return (
+        <Badge className="bg-sky-500/15 text-sky-700 hover:bg-sky-500/25 border-0 dark:text-sky-300 gap-1.5">
+          <CalendarClock className="h-3.5 w-3.5" /> Agendado
+        </Badge>
+      );
   }
 }
 
@@ -139,6 +179,25 @@ export default function HistoryView({ campaigns, setCampaigns }: Props) {
 
   const selected = campaigns.find((c) => c.id === selectedId) ?? null;
   const logs = selectedId ? campaignLogs[selectedId] ?? [] : [];
+  const fallbackLog =
+    selected?.status === "Falhou" && selected.sent === 0 && isScheduledConfig(selected.config)
+      ? OFFLINE_SCHEDULE_FAILURE_LOG
+      : null;
+  const displayLogs = logs.length > 0 ? logs : fallbackLog ? [fallbackLog] : [];
+  const showLogPanel =
+    !!selected &&
+    (displayLogs.length > 0 ||
+      selected.status === "Em andamento" ||
+      selected.status === "Pausado" ||
+      selected.status === "Aguardando" ||
+      selected.status === "Agendado" ||
+      selected.status === "Falhou");
+  const canPauseResume = selected?.status === "Em andamento" || selected?.status === "Pausado";
+  const canCancel =
+    selected?.status === "Em andamento" ||
+    selected?.status === "Pausado" ||
+    selected?.status === "Aguardando" ||
+    selected?.status === "Agendado";
 
   useEffect(() => {
     selectedIdRef.current = selectedId;
@@ -202,7 +261,12 @@ export default function HistoryView({ campaigns, setCampaigns }: Props) {
           if (nextStatus === "Concluído" || nextStatus === "Falhou") {
             const finishedDate = parseSQLiteDate(event.finishedAt) ?? new Date();
             nextEndTime = formatTime(finishedDate);
-          } else if (nextStatus === "Em andamento") {
+          } else if (
+            nextStatus === "Em andamento" ||
+            nextStatus === "Pausado" ||
+            nextStatus === "Aguardando" ||
+            nextStatus === "Agendado"
+          ) {
             nextEndTime = undefined;
           }
 
@@ -243,7 +307,7 @@ export default function HistoryView({ campaigns, setCampaigns }: Props) {
 
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [logs]);
+  }, [displayLogs]);
 
   const openSheet = async (id: string) => {
     setSelectedId(id);
@@ -286,6 +350,16 @@ export default function HistoryView({ campaigns, setCampaigns }: Props) {
       }
     } catch (error) {
       console.error("[history] Falha ao pausar/retomar campanha:", error);
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("Já existe uma campanha em execução")) {
+        toast({
+          title: "Não é possível retomar",
+          description: "Não é possível retomar. Já existe outra campanha rodando.",
+          variant: "destructive",
+        });
+        return;
+      }
+
       toast({
         title: "Erro ao atualizar campanha",
         description: "Não foi possível pausar ou retomar a campanha.",
@@ -441,7 +515,10 @@ export default function HistoryView({ campaigns, setCampaigns }: Props) {
                   )}
                 </div>
 
-                {(selected.status === "Em andamento" || selected.status === "Pausado") && (
+                {(selected.status === "Em andamento" ||
+                  selected.status === "Pausado" ||
+                  selected.status === "Aguardando" ||
+                  selected.status === "Agendado") && (
                   <>
                     <div className="space-y-2">
                       <div className="flex items-center justify-between text-sm">
@@ -454,47 +531,60 @@ export default function HistoryView({ campaigns, setCampaigns }: Props) {
                       />
                     </div>
 
-                    <div className="flex gap-2">
-                      <Button variant="outline" size="sm" className="flex-1 gap-1.5" onClick={handlePauseResume}>
-                        {selected.status === "Em andamento" ? (
-                          <>
-                            <Pause className="w-3.5 h-3.5" /> Pausar
-                          </>
-                        ) : (
-                          <>
-                            <Play className="w-3.5 h-3.5" /> Retomar
-                          </>
+                    {(canPauseResume || canCancel) && (
+                      <div className="flex gap-2">
+                        {canPauseResume && (
+                          <Button variant="outline" size="sm" className="flex-1 gap-1.5" onClick={handlePauseResume}>
+                            {selected.status === "Em andamento" ? (
+                              <>
+                                <Pause className="w-3.5 h-3.5" /> Pausar
+                              </>
+                            ) : (
+                              <>
+                                <Play className="w-3.5 h-3.5" /> Retomar
+                              </>
+                            )}
+                          </Button>
                         )}
-                      </Button>
-                      <Button variant="destructive" size="sm" className="flex-1 gap-1.5" onClick={() => setCancelDialogOpen(true)}>
-                        <XCircle className="w-3.5 h-3.5" /> Cancelar
-                      </Button>
-                    </div>
-
-                    <div className="space-y-2">
-                      <h4 className="text-sm font-semibold text-foreground">Log em tempo real</h4>
-                      <ScrollArea className="h-48 rounded-lg bg-[hsl(210,25%,10%)] p-3 font-mono text-xs text-[hsl(142,40%,70%)]">
-                        {logs.length === 0 && (
-                          <p className="text-[hsl(210,15%,45%)] italic">Aguardando eventos...</p>
-                        )}
-                        {logs.map((line, index) => (
-                          <p
-                            key={`${line}-${index}`}
-                            className={
-                              line.includes("❌")
-                                ? "text-[hsl(0,72%,65%)]"
-                                : line.includes("✅")
-                                  ? "text-[hsl(142,64%,55%)]"
-                                  : "text-[hsl(210,15%,55%)]"
-                            }
+                        {canCancel && (
+                          <Button
+                            variant="destructive"
+                            size="sm"
+                            className={canPauseResume ? "flex-1 gap-1.5" : "w-full gap-1.5"}
+                            onClick={() => setCancelDialogOpen(true)}
                           >
-                            {line}
-                          </p>
-                        ))}
-                        <div ref={logEndRef} />
-                      </ScrollArea>
-                    </div>
+                            <XCircle className="w-3.5 h-3.5" /> Cancelar
+                          </Button>
+                        )}
+                      </div>
+                    )}
                   </>
+                )}
+
+                {showLogPanel && (
+                  <div className="space-y-2">
+                    <h4 className="text-sm font-semibold text-foreground">Log em tempo real</h4>
+                    <ScrollArea className="h-48 rounded-lg bg-[hsl(210,25%,10%)] p-3 font-mono text-xs text-[hsl(142,40%,70%)]">
+                      {displayLogs.length === 0 && (
+                        <p className="text-[hsl(210,15%,45%)] italic">Aguardando eventos...</p>
+                      )}
+                      {displayLogs.map((line, index) => (
+                        <p
+                          key={`${line}-${index}`}
+                          className={
+                            line.includes("❌")
+                              ? "text-[hsl(0,72%,65%)]"
+                              : line.includes("✅")
+                                ? "text-[hsl(142,64%,55%)]"
+                                : "text-[hsl(210,15%,55%)]"
+                          }
+                        >
+                          {line}
+                        </p>
+                      ))}
+                      <div ref={logEndRef} />
+                    </ScrollArea>
+                  </div>
                 )}
 
                 {selected.status === "Concluído" && (

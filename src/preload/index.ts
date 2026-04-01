@@ -22,14 +22,18 @@ type TemplateRecord = TemplatePayload & {
   created_at: string
 }
 
+type CampaignStatus = 'Concluído' | 'Pausado' | 'Falhou' | 'Em andamento' | 'Aguardando' | 'Agendado'
+
 type CampaignPayload = {
   id: string
   name: string
-  status: string
+  status: CampaignStatus
   total_contacts: number
   sent_count?: number
   success_count?: number
   failed_count?: number
+  config?: unknown
+  messages?: unknown
 }
 
 type CampaignRecord = Required<Pick<CampaignPayload, 'sent_count' | 'success_count' | 'failed_count'>> &
@@ -133,7 +137,7 @@ const api = {
     ipcRenderer.invoke('db-get-campaign-contacts', campaignId),
   finishCampaign: (
     campaignId: string,
-    status: string,
+    status: CampaignStatus,
     sentCount: number,
     successCount: number,
     failedCount: number
@@ -146,6 +150,11 @@ const api = {
       successCount,
       failedCount
     ),
+  enqueueCampaign: (
+    campaignId: string,
+    config: CampaignServiceConfig,
+    messages: unknown[]
+  ): Promise<boolean> => ipcRenderer.invoke('enqueue-campaign', campaignId, config, messages),
   startCampaign: (
     campaignId: string,
     config: CampaignServiceConfig,

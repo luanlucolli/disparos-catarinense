@@ -15,6 +15,7 @@ import {
   createCampaign,
   getCampaignContacts,
   finishCampaign,
+  type CampaignStatus,
   type CampaignInput,
   type CampaignContactInput,
   type TemplateInput
@@ -164,6 +165,7 @@ function setupWhatsApp(mainWindow: BrowserWindow): void {
       const info = clientInstance.info;
       const payload = info ? { name: info.pushname, number: info.wid?.user } : undefined;
       sendWhatsAppEvent({ type: 'ready', payload })
+      void campaignService.processNextInQueue()
     })
 
     clientInstance.on('authenticated', () => {
@@ -450,7 +452,7 @@ function registerDatabaseIpcHandlers(): void {
     async (
       _,
       campaignId: string,
-      status: string,
+      status: CampaignStatus,
       sentCount: number,
       successCount: number,
       failedCount: number
@@ -477,6 +479,17 @@ function registerCampaignIpcHandlers(): void {
   }
 
   hasRegisteredCampaignHandlers = true
+
+  ipcMain.handle(
+    'enqueue-campaign',
+    async (_, campaignId: string, config: CampaignServiceConfig, messages: unknown[]) => {
+      try {
+        return await campaignService.enqueueCampaign(campaignId, config, messages)
+      } catch (error) {
+        return throwIpcCampaignError('enqueue-campaign', error)
+      }
+    }
+  )
 
   ipcMain.handle(
     'start-campaign',
@@ -556,6 +569,7 @@ app.whenReady().then(() => {
 
   registerDatabaseIpcHandlers()
   registerCampaignIpcHandlers()
+  campaignService.initScheduler()
   createWindow()
 
   app.on('activate', function () {

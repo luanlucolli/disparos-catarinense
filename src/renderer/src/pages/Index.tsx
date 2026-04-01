@@ -75,8 +75,9 @@ export default function Index(): ReactElement {
       sent: 0,
       successCount: 0,
       failedCount: 0,
-      status: config.scheduled ? 'Pausado' : 'Em andamento',
-      startTime: config.scheduled ? `${config.scheduleHour}:${config.scheduleMinute}` : timeStr
+      status: config.scheduled ? 'Agendado' : 'Aguardando',
+      startTime: config.scheduled ? `${config.scheduleHour}:${config.scheduleMinute}` : timeStr,
+      config
     }
 
     void (async () => {
@@ -89,7 +90,9 @@ export default function Index(): ReactElement {
             total_contacts: newCampaign.total,
             sent_count: newCampaign.sent,
             success_count: newCampaign.successCount,
-            failed_count: newCampaign.failedCount
+            failed_count: newCampaign.failedCount,
+            config,
+            messages
           },
           contacts
         )
@@ -97,7 +100,7 @@ export default function Index(): ReactElement {
         setCampaigns((prev) => [newCampaign, ...prev.filter((campaign) => campaign.id !== newCampaign.id)])
         setView('history')
 
-        await window.api.startCampaign(newCampaign.id, config, messages)
+        await window.api.enqueueCampaign(newCampaign.id, config, messages)
       } catch (error) {
         console.error('[campaign] Falha ao iniciar campanha:', error)
         setCampaigns((prev) =>
