@@ -15,11 +15,11 @@ import {
 import { compileMessageForContact } from './MessageParser'
 
 const SCHEDULER_INTERVAL_MS = 60_000
-const SCHEDULER_TOLERANCE_MS = 180_000 
+const SCHEDULER_TOLERANCE_MS = 180_000
 const OFFLINE_SCHEDULE_FAILURE_LOG =
   '[Sistema] Campanha cancelada: O aplicativo estava fechado no horário agendado.'
 const SHUTDOWN_FAILURE_LOG =
-  '[Sistema] Campanha cancelada: O aplicativo foi fechado durante o envio.'
+  '[Sistema] Campanha cancelada: O aplicativo foi fechado.'
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => {
@@ -31,6 +31,7 @@ type CampaignState = {
   running: boolean
   paused: boolean
   cancelled: boolean
+  isShuttingDown?: boolean // Flag de segurança para evitar duplos logs no fechamento
   sent: number
   success: number
   failed: number
@@ -67,6 +68,7 @@ export type CampaignProgressEvent = {
 
 type CampaignServiceDependencies = {
   getClient: () => Client | null
+  isClientReady: () => boolean
   emitProgress: (event: CampaignProgressEvent) => void
 }
 
@@ -130,47 +132,68 @@ export class CampaignService {
       return
     }
 
-    // Limpeza de campanhas que possam ter ficado presas em "Em andamento" por um crash no SO
-    const ghostCampaigns = getCampaignsByStatus('Em andamento')
-    for (const ghost of ghostCampaigns) {
-      updateCampaignStatus(ghost.id, 'Aguardando')
+    const crashResidualCampaigns = [
+      ...getCampaignsByStatus('Em andamento'),
+      ...getCampaignsByStatus('Aguardando'),
+      ...getCampaignsByStatus('Agendado')
+    ]
+
+    for (const campaign of crashResidualCampaigns) {
+      this.failCampaignByAppShutdown(campaign)
     }
 
     this.schedulerInterval = setInterval(() => {
       void this.runSchedulerTick()
     }, SCHEDULER_INTERVAL_MS)
 
+    // O tick já roda processNextInQueue, então removemos a chamada redundante aqui.
     void this.runSchedulerTick()
-    void this.processNextInQueue()
   }
 
-  // NOVO MÉTODOS: Cancela tudo que estiver rodando antes do app fechar.
-  async cancelAllRunningCampaigns(): Promise<void> {
-    const activeCampaigns = Array.from(this.campaigns.values()).filter((c) => c.running)
-    
+  hasPendingOrRunningCampaigns(): boolean {
+    const hasRunningInMemory = Array.from(this.campaigns.values()).some(
+      (campaignState) => campaignState.running && !campaignState.paused
+    )
+    if (hasRunningInMemory) {
+      return true
+    }
+
+    return getCampaignsByStatus('Aguardando').length > 0 || getCampaignsByStatus('Agendado').length > 0
+  }
+
+  async cancelAllActiveCampaigns(): Promise<void> {
+    const activeCampaigns = Array.from(this.campaigns.values()).filter(
+      (campaignState) => campaignState.running
+    )
+
     for (const runtime of activeCampaigns) {
+      runtime.isShuttingDown = true // Informa ao finally() para não agir duplamente
       runtime.cancelled = true
       runtime.paused = false
       this.resolvePause(runtime)
-      
+
       const campaign = getCampaignById(runtime.campaignId)
-      
+
       if (campaign) {
-        finishCampaign(
-          runtime.campaignId,
-          'Falhou',
-          runtime.sent,
-          runtime.success,
-          runtime.failed
-        )
+        finishCampaign(runtime.campaignId, 'Falhou', runtime.sent, runtime.success, runtime.failed)
       }
-      
+
       this.emit(runtime, {
         status: 'Falhou',
-        log: `${nowTag()} 🛑 ${SHUTDOWN_FAILURE_LOG}`
+        log: `${nowTag()} 🛑 ${SHUTDOWN_FAILURE_LOG}`,
+        finishedAt: new Date().toISOString()
       })
-      
+
       console.info(`[campaign] Campanha ${runtime.campaignId} cancelada forçadamente pelo fechamento do app.`)
+    }
+
+    const pendingCampaigns = [
+      ...getCampaignsByStatus('Aguardando'),
+      ...getCampaignsByStatus('Agendado')
+    ]
+
+    for (const campaign of pendingCampaigns) {
+      this.failCampaignByAppShutdown(campaign)
     }
   }
 
@@ -241,8 +264,8 @@ export class CampaignService {
       throw new Error('Nenhuma mensagem válida foi enviada para iniciar a campanha.')
     }
 
-    if (!this.dependencies.getClient()) {
-      throw new Error('Cliente WhatsApp indisponível. Conecte-se antes de iniciar a campanha.')
+    if (!this.isReadyForDispatch()) {
+      throw new Error('Cliente WhatsApp ainda não está pronto. Conecte-se e aguarde o status "Pronto".')
     }
 
     updateCampaignPayload(campaignId, resolvedConfig, resolvedMessages)
@@ -280,6 +303,9 @@ export class CampaignService {
         status: 'Pausado',
         log: `${nowTag()} ⏸️ Campanha pausada.`
       })
+      
+      // CORREÇÃO: Se eu pausei esta, o motor ficou livre. Puxo imediatamente a próxima da fila!
+      void this.processNextInQueue()
       return true
     }
 
@@ -364,7 +390,7 @@ export class CampaignService {
       return false
     }
 
-    if (!this.dependencies.getClient()) {
+    if (!this.isReadyForDispatch()) {
       return false
     }
 
@@ -402,6 +428,7 @@ export class CampaignService {
 
         if (
           errorMessage.includes('Cliente WhatsApp indisponível') ||
+          errorMessage.includes('ainda não está pronto') ||
           errorMessage.includes('Já existe uma campanha em execução') ||
           errorMessage.includes('Esta campanha já está em execução')
         ) {
@@ -452,15 +479,16 @@ export class CampaignService {
       for (let index = 0; index < pendingContacts.length; index += 1) {
         const contact = pendingContacts[index]
 
-        if (runtime.cancelled) {
+        if (runtime.cancelled) break
+
+        if (!this.dependencies.isClientReady()) {
+          finalStatus = 'Falhou'
+          finalLog = `${nowTag()} ❌ Falha Crítica: WhatsApp foi desconectado (Sessão Encerrada ou Sem Internet) durante o envio.`
           break
         }
 
         await this.waitIfPaused(runtime)
-
-        if (runtime.cancelled) {
-          break
-        }
+        if (runtime.cancelled) break
 
         const result = await this.processContact(runtime, contact, config, messages)
 
@@ -482,9 +510,7 @@ export class CampaignService {
           log: result.log
         })
 
-        if (runtime.cancelled) {
-          break
-        }
+        if (runtime.cancelled) break
 
         if (index < pendingContacts.length - 1) {
           const randomDelay = this.randomBetweenSeconds(config.minDelay, config.maxDelay)
@@ -509,24 +535,30 @@ export class CampaignService {
         }
       }
 
-      if (runtime.cancelled) {
-        finalStatus = 'Falhou'
-        finalLog = `${nowTag()} ❌ Campanha cancelada.`
-      } else {
-        finalStatus = 'Concluído'
-        finalLog = `${nowTag()} ✅ Todos os contatos processados.`
+      if (!finalStatus && !runtime.isShuttingDown) {
+        if (runtime.cancelled) {
+          finalStatus = 'Falhou'
+          finalLog = `${nowTag()} ❌ Campanha cancelada pelo usuário.`
+        } else {
+          finalStatus = 'Concluído'
+          finalLog = `${nowTag()} ✅ Todos os contatos processados.`
+        }
       }
     } catch (error) {
-      finalStatus = 'Falhou'
-      finalLog = `${nowTag()} ❌ Erro fatal da campanha: ${safeMessage(error)}`
-      console.error('[campaign] Erro fatal no loop da campanha:', error)
+      if (!runtime.isShuttingDown) {
+        finalStatus = 'Falhou'
+        finalLog = `${nowTag()} ❌ Erro fatal da campanha: ${safeMessage(error)}`
+        console.error('[campaign] Erro fatal no loop da campanha:', error)
+      }
     } finally {
       runtime.running = false
       runtime.paused = false
       this.resolvePause(runtime)
       this.campaigns.delete(runtime.campaignId)
 
-      if (finalStatus) {
+      // CORREÇÃO: Impede salvar no banco e emitir redundância se o evento
+      // foi disparado pela função cancelAllActiveCampaigns (app fechando).
+      if (finalStatus && !runtime.isShuttingDown) {
         finishCampaign(runtime.campaignId, finalStatus, runtime.sent, runtime.success, runtime.failed)
         this.emit(runtime, {
           status: finalStatus,
@@ -535,10 +567,12 @@ export class CampaignService {
         })
       }
 
-      try {
-        await this.processNextInQueue()
-      } catch (queueError) {
-        console.error('[campaign] Erro ao processar próxima campanha da fila:', queueError)
+      if (!runtime.isShuttingDown) {
+        try {
+          await this.processNextInQueue()
+        } catch (queueError) {
+          console.error('[campaign] Erro ao processar próxima campanha da fila:', queueError)
+        }
       }
     }
   }
@@ -674,7 +708,7 @@ export class CampaignService {
       }
 
       await client.sendMessage(targetId, finalMessage, {
-        linkPreview: false,
+        linkPreview: false, 
         waitUntilMsgSent: true
       })
 
@@ -724,11 +758,35 @@ export class CampaignService {
     })
   }
 
+  private failCampaignByAppShutdown(
+    campaign: Pick<CampaignRecord, 'id' | 'sent_count' | 'success_count' | 'failed_count'>
+  ): void {
+    finishCampaign(
+      campaign.id,
+      'Falhou',
+      campaign.sent_count ?? 0,
+      campaign.success_count ?? 0,
+      campaign.failed_count ?? 0
+    )
+
+    this.emitDetachedProgress(campaign, {
+      status: 'Falhou',
+      log: `${nowTag()} 🛑 ${SHUTDOWN_FAILURE_LOG}`,
+      finishedAt: new Date().toISOString()
+    })
+
+    console.info(`[campaign] Campanha ${campaign.id} cancelada: aplicativo encerrado com disparo pendente.`)
+  }
+
   private hasAnotherRunningCampaign(campaignId?: string): boolean {
     return Array.from(this.campaigns.values()).some((campaignState) => {
       const sameCampaign = campaignId ? campaignState.campaignId === campaignId : false
       return campaignState.running && !campaignState.paused && !sameCampaign
     })
+  }
+
+  private isReadyForDispatch(): boolean {
+    return Boolean(this.dependencies.getClient()) && this.dependencies.isClientReady()
   }
 
   private normalizeConfig(config: unknown): CampaignServiceConfig {
@@ -787,9 +845,9 @@ export class CampaignService {
     let remainingMs = Math.max(0, totalMs)
 
     while (remainingMs > 0) {
-      if (runtime.cancelled) return
+      if (runtime.cancelled || runtime.isShuttingDown) return // Previne travamento no fechamento
       await this.waitIfPaused(runtime)
-      if (runtime.cancelled) return
+      if (runtime.cancelled || runtime.isShuttingDown) return
 
       const step = Math.min(remainingMs, 500)
       await sleep(step)
@@ -839,7 +897,6 @@ export class CampaignService {
   }
 
   private calculateTypingDelay(message: string): number {
-    // Proporcional ao texto: 50ms por caractere (min 1.5s, max 12s)
     return Math.max(1500, Math.min(12000, message.length * 50))
   }
 }

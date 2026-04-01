@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
 import { execFile } from 'child_process'
 import { rmSync } from 'fs'
 import { join } from 'path'
@@ -35,9 +35,11 @@ const execFileAsync = promisify(execFile)
 let isAppQuitting = false
 let currentMainWindow: BrowserWindow | null = null
 let currentWhatsAppClient: Client | null = null
+let isWhatsAppReady = false
 
 const campaignService = new CampaignService({
   getClient: () => currentWhatsAppClient,
+  isClientReady: () => isWhatsAppReady,
   emitProgress: (event) => {
     if (!currentMainWindow || currentMainWindow.isDestroyed() || currentMainWindow.webContents.isDestroyed()) {
       return
@@ -85,7 +87,7 @@ function setupWhatsApp(mainWindow: BrowserWindow): void {
     for (const fileName of lockFiles) {
       try {
         rmSync(join(sessionDir, fileName), { force: true })
-      } catch (error) {
+      } catch {
         // Ignorado silenciosamente
       }
     }
@@ -161,6 +163,7 @@ function setupWhatsApp(mainWindow: BrowserWindow): void {
 
     clientInstance.on('ready', () => {
       if (client !== clientInstance) return
+      isWhatsAppReady = true
       console.info('[whatsapp] Cliente pronto')
       const info = clientInstance.info;
       const payload = info ? { name: info.pushname, number: info.wid?.user } : undefined;
@@ -181,6 +184,7 @@ function setupWhatsApp(mainWindow: BrowserWindow): void {
 
     clientInstance.on('disconnected', async (reason: string) => {
       if (client !== clientInstance) return
+      isWhatsAppReady = false
       console.warn('[whatsapp] Cliente desconectado pelo celular:', reason)
 
       // CORREÇÃO: Se estamos no meio de um logout manual, ignoramos esse evento
@@ -198,6 +202,7 @@ function setupWhatsApp(mainWindow: BrowserWindow): void {
 
     clientInstance.on('auth_failure', async (message: string) => {
       if (client !== clientInstance) return
+      isWhatsAppReady = false
       console.error('[whatsapp] Falha de autenticação:', message)
 
       if (isLoggingOut) return
@@ -216,6 +221,7 @@ function setupWhatsApp(mainWindow: BrowserWindow): void {
   const destroyCurrentClient = async (): Promise<void> => {
     if (!client) return
     try {
+      isWhatsAppReady = false
       await client.destroy()
       console.info('[whatsapp] Navegador invisível encerrado graciosamente.')
     } catch (error) {
@@ -227,6 +233,7 @@ function setupWhatsApp(mainWindow: BrowserWindow): void {
   }
 
   const resetClient = async (purgeSession = false): Promise<void> => {
+    isWhatsAppReady = false
     await destroyCurrentClient()
     await killChromiumSessionProcesses()
     if (purgeSession) clearSessionDirectory()
@@ -248,6 +255,7 @@ function setupWhatsApp(mainWindow: BrowserWindow): void {
     console.info('[whatsapp] Inicializando cliente')
     isInitializing = true
     isClientStarted = true
+    isWhatsAppReady = false
     isLoggingOut = false // Garante que a trava comece desativada
 
     let timeoutHandle: NodeJS.Timeout | undefined
@@ -272,6 +280,7 @@ function setupWhatsApp(mainWindow: BrowserWindow): void {
     } catch (error) {
       console.error('[whatsapp] Erro ao inicializar:', error)
       isClientStarted = false
+      isWhatsAppReady = false
 
       const isTimeoutError = error instanceof Error && error.message.includes('Tempo limite')
       const messageBase = error instanceof Error ? error.message : 'Falha ao inicializar cliente do WhatsApp.'
@@ -290,6 +299,7 @@ function setupWhatsApp(mainWindow: BrowserWindow): void {
 
   const logoutWhatsAppClient = async (): Promise<void> => {
     if (!client) {
+      isWhatsAppReady = false
       sendWhatsAppEvent({ type: 'disconnected', payload: 'Nenhum cliente ativo para desconectar.' })
       return
     }
@@ -319,6 +329,7 @@ function setupWhatsApp(mainWindow: BrowserWindow): void {
       clearSessionDirectory()
 
       isClientStarted = false
+      isWhatsAppReady = false
       isLoggingOut = false // Desativa a trava
 
       sendWhatsAppEvent({ type: 'disconnected', payload: 'Você foi desconectado com sucesso.' })
@@ -333,6 +344,7 @@ function setupWhatsApp(mainWindow: BrowserWindow): void {
     try {
       isInitializing = false
       isClientStarted = false
+      isWhatsAppReady = false
       await resetClient(true)
       sendWhatsAppEvent({
         type: 'disconnected',
@@ -374,7 +386,7 @@ function setupWhatsApp(mainWindow: BrowserWindow): void {
       console.info('\n[sistema] Encerrando o aplicativo. Salvando sessão e parando envios...')
 
       // 1. AVISA O MOTOR PARA MATAR TUDO QUE ESTÁ RODANDO
-      await campaignService.cancelAllRunningCampaigns()
+      await campaignService.cancelAllActiveCampaigns()
 
       // 2. Fecha o WhatsApp educadamente
       await destroyCurrentClient()
@@ -550,6 +562,35 @@ function createWindow(): void {
 
   mainWindow.on('ready-to-show', () => {
     mainWindow.show()
+  })
+
+  mainWindow.on('close', (event) => {
+    if (isAppQuitting) {
+      return
+    }
+
+    const hasPendingCampaigns = campaignService.hasPendingOrRunningCampaigns()
+    if (!hasPendingCampaigns) {
+      return
+    }
+
+    const selectedButton = dialog.showMessageBoxSync(mainWindow, {
+      type: 'warning',
+      buttons: ['Cancelar envios e Sair', 'Continuar no App'],
+      defaultId: 1,
+      cancelId: 1,
+      title: 'Confirmar Saída',
+      message: 'Você tem disparos em andamento, na fila ou agendados.',
+      detail:
+        'Se você fechar o aplicativo agora, essas campanhas serão canceladas (as pausadas serão mantidas).\n\nDeseja realmente sair?'
+    })
+
+    if (selectedButton === 1) {
+      event.preventDefault()
+    } else {
+      event.preventDefault()
+      app.quit()
+    }
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
