@@ -226,12 +226,15 @@ export class CampaignService {
       return true
     }
 
-    if (this.hasAnotherRunningCampaign(campaignId)) {
+    const hasQueue = getCampaignsByStatus('Aguardando').some((queuedCampaign) => queuedCampaign.id !== campaignId)
+
+    if (this.hasAnotherRunningCampaign(campaignId) || hasQueue) {
       updateCampaignStatus(campaignId, 'Aguardando')
       this.emitDetachedProgress(campaign, {
         status: 'Aguardando',
         log: `${nowTag()} 🕒 Campanha adicionada à fila de envio.`
       })
+      void this.processNextInQueue()
       return true
     }
 
@@ -339,14 +342,19 @@ export class CampaignService {
       throw new Error('Esta campanha não está pausada.')
     }
 
-    const storedConfig = this.normalizeConfig(campaign.config)
     const storedMessages = this.normalizeMessages(campaign.messages)
 
     if (storedMessages.length === 0) {
       throw new Error('Esta campanha não possui mensagens válidas para retomar.')
     }
 
-    return this.startCampaign(campaignId, storedConfig, storedMessages)
+    updateCampaignStatus(campaignId, 'Aguardando')
+    this.emitDetachedProgress(campaign, {
+      status: 'Aguardando',
+      log: `${nowTag()} 🔄 Campanha retomada e enviada para a fila.`
+    })
+    void this.processNextInQueue()
+    return true
   }
 
   async cancelCampaign(campaignId: string): Promise<boolean> {
