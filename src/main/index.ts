@@ -52,10 +52,10 @@ function setupWhatsApp(mainWindow: BrowserWindow): void {
 
   let isInitializing = false
   let isClientStarted = false
-  
+
   // NOVO: Trava para evitar conflito entre o Logout Manual e o Evento Automático
-  let isLoggingOut = false 
-  
+  let isLoggingOut = false
+
   let client: Client | null = null
 
   // --- MEMÓRIA DE ESTADO ---
@@ -199,7 +199,7 @@ function setupWhatsApp(mainWindow: BrowserWindow): void {
     clientInstance.on('auth_failure', async (message: string) => {
       if (client !== clientInstance) return
       console.error('[whatsapp] Falha de autenticação:', message)
-      
+
       if (isLoggingOut) return
 
       isClientStarted = false
@@ -297,7 +297,7 @@ function setupWhatsApp(mainWindow: BrowserWindow): void {
     if (isLoggingOut) return // Previne duplos cliques no React
 
     // Ativa a trava para silenciar os eventos automáticos
-    isLoggingOut = true 
+    isLoggingOut = true
 
     try {
       console.info('[whatsapp] Iniciando processo de LOGOUT real (Servidor + Local)...')
@@ -320,7 +320,7 @@ function setupWhatsApp(mainWindow: BrowserWindow): void {
 
       isClientStarted = false
       isLoggingOut = false // Desativa a trava
-      
+
       sendWhatsAppEvent({ type: 'disconnected', payload: 'Você foi desconectado com sucesso.' })
     }
   }
@@ -371,9 +371,15 @@ function setupWhatsApp(mainWindow: BrowserWindow): void {
       event.preventDefault()
       isAppQuitting = true
 
-      console.info('\n[sistema] Encerrando o aplicativo. Salvando sessão do WhatsApp com segurança...')
+      console.info('\n[sistema] Encerrando o aplicativo. Salvando sessão e parando envios...')
 
+      // 1. AVISA O MOTOR PARA MATAR TUDO QUE ESTÁ RODANDO
+      await campaignService.cancelAllRunningCampaigns()
+
+      // 2. Fecha o WhatsApp educadamente
       await destroyCurrentClient()
+
+      // 3. Varre qualquer lixo que sobrou
       await killChromiumSessionProcesses()
       clearChromiumSessionLocks()
 

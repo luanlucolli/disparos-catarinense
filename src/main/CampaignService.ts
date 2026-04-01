@@ -15,11 +15,11 @@ import {
 import { compileMessageForContact } from './MessageParser'
 
 const SCHEDULER_INTERVAL_MS = 60_000
-const SCHEDULER_TOLERANCE_MS = 90_000
-const INTER_CAMPAIGN_DELAY_MIN_MS = 20_000
-const INTER_CAMPAIGN_DELAY_MAX_MS = 45_000
+const SCHEDULER_TOLERANCE_MS = 180_000 
 const OFFLINE_SCHEDULE_FAILURE_LOG =
   '[Sistema] Campanha cancelada: O aplicativo estava fechado no horário agendado.'
+const SHUTDOWN_FAILURE_LOG =
+  '[Sistema] Campanha cancelada: O aplicativo foi fechado durante o envio.'
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => {
@@ -77,10 +77,6 @@ type ContactResult = {
   errorLog: string | null
 }
 
-type QueueProcessingOptions = {
-  applyHandoffDelay?: boolean
-}
-
 const formatClock = (date: Date): string => {
   const hours = String(date.getHours()).padStart(2, '0')
   const minutes = String(date.getMinutes()).padStart(2, '0')
@@ -108,17 +104,14 @@ const toPositiveNumber = (value: unknown, fallback: number): number => {
   if (!Number.isFinite(numeric) || numeric <= 0) {
     return fallback
   }
-
   return numeric
 }
 
 const parseClockUnit = (value: unknown, fallback: number, max: number): number => {
   const numeric = Number.parseInt(String(value ?? ''), 10)
-
   if (!Number.isFinite(numeric) || numeric < 0) {
     return fallback
   }
-
   return Math.min(max, numeric)
 }
 
@@ -128,7 +121,6 @@ const isObjectRecord = (value: unknown): value is Record<string, unknown> => {
 
 export class CampaignService {
   private campaigns = new Map<string, CampaignState>()
-
   private schedulerInterval: NodeJS.Timeout | null = null
 
   constructor(private readonly dependencies: CampaignServiceDependencies) {}
@@ -138,12 +130,48 @@ export class CampaignService {
       return
     }
 
+    // Limpeza de campanhas que possam ter ficado presas em "Em andamento" por um crash no SO
+    const ghostCampaigns = getCampaignsByStatus('Em andamento')
+    for (const ghost of ghostCampaigns) {
+      updateCampaignStatus(ghost.id, 'Aguardando')
+    }
+
     this.schedulerInterval = setInterval(() => {
       void this.runSchedulerTick()
     }, SCHEDULER_INTERVAL_MS)
 
     void this.runSchedulerTick()
     void this.processNextInQueue()
+  }
+
+  // NOVO MÉTODOS: Cancela tudo que estiver rodando antes do app fechar.
+  async cancelAllRunningCampaigns(): Promise<void> {
+    const activeCampaigns = Array.from(this.campaigns.values()).filter((c) => c.running)
+    
+    for (const runtime of activeCampaigns) {
+      runtime.cancelled = true
+      runtime.paused = false
+      this.resolvePause(runtime)
+      
+      const campaign = getCampaignById(runtime.campaignId)
+      
+      if (campaign) {
+        finishCampaign(
+          runtime.campaignId,
+          'Falhou',
+          runtime.sent,
+          runtime.success,
+          runtime.failed
+        )
+      }
+      
+      this.emit(runtime, {
+        status: 'Falhou',
+        log: `${nowTag()} 🛑 ${SHUTDOWN_FAILURE_LOG}`
+      })
+      
+      console.info(`[campaign] Campanha ${runtime.campaignId} cancelada forçadamente pelo fechamento do app.`)
+    }
   }
 
   async enqueueCampaign(
@@ -235,7 +263,7 @@ export class CampaignService {
     updateCampaignStatus(runtime.campaignId, 'Em andamento')
     this.emit(runtime, {
       status: 'Em andamento',
-      log: `${nowTag()} 🚀 Campanha iniciada.`
+      log: `${nowTag()} 🚀 Processamento de campanha iniciado.`
     })
 
     void this.runCampaign(runtime, resolvedConfig, resolvedMessages)
@@ -281,8 +309,8 @@ export class CampaignService {
       return false
     }
 
-    if (campaign.status !== 'Pausado' && campaign.status !== 'Aguardando' && campaign.status !== 'Agendado') {
-      return false
+    if (campaign.status !== 'Pausado') {
+      throw new Error('Esta campanha não está pausada.')
     }
 
     const storedConfig = this.normalizeConfig(campaign.config)
@@ -324,14 +352,14 @@ export class CampaignService {
 
     this.emitDetachedProgress(campaign, {
       status: 'Falhou',
-      log: `${nowTag()} ❌ Campanha finalizada como falha.`,
+      log: `${nowTag()} ❌ Campanha cancelada.`,
       finishedAt: new Date().toISOString()
     })
 
     return true
   }
 
-  async processNextInQueue(options: QueueProcessingOptions = {}): Promise<boolean> {
+  async processNextInQueue(): Promise<boolean> {
     if (this.hasAnotherRunningCampaign()) {
       return false
     }
@@ -339,8 +367,6 @@ export class CampaignService {
     if (!this.dependencies.getClient()) {
       return false
     }
-
-    let handoffDelayApplied = false
 
     while (!this.hasAnotherRunningCampaign()) {
       const nextCampaign = getOldestCampaignByStatus('Aguardando')
@@ -366,28 +392,10 @@ export class CampaignService {
           log: `${nowTag()} ❌ Campanha removida da fila: nenhuma mensagem válida encontrada.`,
           finishedAt: new Date().toISOString()
         })
-
         continue
       }
 
       try {
-        if (options.applyHandoffDelay && !handoffDelayApplied) {
-          const handoffDelay = this.randomBetweenMs(INTER_CAMPAIGN_DELAY_MIN_MS, INTER_CAMPAIGN_DELAY_MAX_MS)
-          const handoffSeconds = Math.ceil(handoffDelay / 1000)
-
-          this.emitDetachedProgress(nextCampaign, {
-            status: 'Aguardando',
-            log: `${nowTag()} ⏳ Intervalo anti-ban entre campanhas: aguardando ${handoffSeconds}s antes de iniciar.`
-          })
-
-          await sleep(handoffDelay)
-          handoffDelayApplied = true
-
-          if (this.hasAnotherRunningCampaign() || !this.dependencies.getClient()) {
-            return false
-          }
-        }
-
         return await this.startCampaign(nextCampaign.id, nextConfig, nextMessages)
       } catch (error) {
         const errorMessage = safeMessage(error)
@@ -428,6 +436,12 @@ export class CampaignService {
     let finalLog = ''
 
     try {
+      if (runtime.cancelled) {
+        finalStatus = 'Falhou'
+        finalLog = `${nowTag()} ❌ Campanha cancelada antes do disparo.`
+        return
+      }
+
       const pendingContacts = getPendingCampaignContacts(runtime.campaignId)
       if (pendingContacts.length === 0) {
         finalStatus = 'Concluído'
@@ -500,7 +514,7 @@ export class CampaignService {
         finalLog = `${nowTag()} ❌ Campanha cancelada.`
       } else {
         finalStatus = 'Concluído'
-        finalLog = `${nowTag()} ✅ Campanha concluída com sucesso.`
+        finalLog = `${nowTag()} ✅ Todos os contatos processados.`
       }
     } catch (error) {
       finalStatus = 'Falhou'
@@ -522,7 +536,7 @@ export class CampaignService {
       }
 
       try {
-        await this.processNextInQueue({ applyHandoffDelay: true })
+        await this.processNextInQueue()
       } catch (queueError) {
         console.error('[campaign] Erro ao processar próxima campanha da fila:', queueError)
       }
@@ -547,7 +561,6 @@ export class CampaignService {
             campaign.success_count ?? 0,
             campaign.failed_count ?? 0
           )
-
           this.emitDetachedProgress(campaign, {
             status: 'Falhou',
             log: `${nowTag()} ❌ Campanha cancelada: configuração de agendamento inválida.`,
@@ -567,7 +580,6 @@ export class CampaignService {
             campaign.success_count ?? 0,
             campaign.failed_count ?? 0
           )
-
           this.emitDetachedProgress(campaign, {
             status: 'Falhou',
             log: `${nowTag()} ${OFFLINE_SCHEDULE_FAILURE_LOG}`,
@@ -578,12 +590,10 @@ export class CampaignService {
 
         if (scheduledAt <= now + 1000) {
           updateCampaignStatus(campaign.id, 'Aguardando')
-
           this.emitDetachedProgress(campaign, {
             status: 'Aguardando',
             log: `${nowTag()} ⏰ Horário atingido. Campanha movida para a fila.`
           })
-
           queueUpdated = true
         }
       }
@@ -610,19 +620,19 @@ export class CampaignService {
         status: 'failed',
         contactStatus: 'failed',
         errorLog,
-        log: `${nowTag()} ❌ ${contact.name || 'Contato sem nome'} (${contact.number}): ${errorLog}`
+        log: `${nowTag()} ❌ ${contact.name || 'Sem nome'} (${contact.number}): ${errorLog}`
       }
     }
 
     const normalizedNumber = this.normalizePhone(contact.number)
     if (!normalizedNumber) {
-      const errorLog = 'Número inválido após limpeza de formato.'
+      const errorLog = 'Número inválido.'
       updateCampaignContactStatus(contact.id, 'failed', errorLog)
       return {
         status: 'failed',
         contactStatus: 'failed',
         errorLog,
-        log: `${nowTag()} ❌ ${contact.name || 'Contato sem nome'} (${contact.number}): ${errorLog}`
+        log: `${nowTag()} ❌ ${contact.name || 'Sem nome'} (${contact.number}): ${errorLog}`
       }
     }
 
@@ -633,19 +643,19 @@ export class CampaignService {
       const targetId = numberId?._serialized ?? formattedNumber
 
       if (!numberId) {
-        const errorLog = 'Número inválido no WhatsApp.'
+        const errorLog = 'Não possui WhatsApp.'
         updateCampaignContactStatus(contact.id, 'failed', errorLog)
         return {
           status: 'failed',
           contactStatus: 'failed',
           errorLog,
-          log: `${nowTag()} ❌ ${contact.name || 'Contato sem nome'} (${contact.number}): ${errorLog}`
+          log: `${nowTag()} ❌ ${contact.name || 'Sem nome'} (${contact.number}): ${errorLog}`
         }
       }
 
       const randomMessage = messages[Math.floor(Math.random() * messages.length)]
       const parsedMessage = compileMessageForContact(randomMessage, contact.name)
-      const finalMessage = parsedMessage || 'Olá, tudo bem?'
+      const finalMessage = parsedMessage || 'Olá!'
 
       if (config.simulateTyping) {
         const typingDelay = this.calculateTypingDelay(finalMessage)
@@ -674,7 +684,7 @@ export class CampaignService {
         status: 'success',
         contactStatus: 'success',
         errorLog: null,
-        log: `${nowTag()} ✅ Sucesso — ${contact.name || 'Contato sem nome'} (${contact.number})`
+        log: `${nowTag()} ✅ Enviado — ${contact.name || 'Sem nome'} (${contact.number})`
       }
     } catch (error) {
       const errorLog = safeMessage(error)
@@ -683,7 +693,7 @@ export class CampaignService {
         status: 'failed',
         contactStatus: 'failed',
         errorLog,
-        log: `${nowTag()} ❌ Falha — ${contact.name || 'Contato sem nome'} (${contact.number}): ${errorLog}`
+        log: `${nowTag()} ❌ Erro de Envio — ${contact.name || 'Sem nome'} (${contact.number}): ${errorLog}`
       }
     }
   }
@@ -751,16 +761,9 @@ export class CampaignService {
     if (!Array.isArray(messages)) {
       return []
     }
-
     return messages.filter((message) => {
-      if (message === null || message === undefined) {
-        return false
-      }
-
-      if (typeof message === 'string') {
-        return message.trim().length > 0
-      }
-
+      if (message === null || message === undefined) return false
+      if (typeof message === 'string') return message.trim().length > 0
       return true
     })
   }
@@ -784,15 +787,9 @@ export class CampaignService {
     let remainingMs = Math.max(0, totalMs)
 
     while (remainingMs > 0) {
-      if (runtime.cancelled) {
-        return
-      }
-
+      if (runtime.cancelled) return
       await this.waitIfPaused(runtime)
-
-      if (runtime.cancelled) {
-        return
-      }
+      if (runtime.cancelled) return
 
       const step = Math.min(remainingMs, 500)
       await sleep(step)
@@ -830,34 +827,19 @@ export class CampaignService {
     return Math.floor(Math.random() * (max - min + 1)) + min
   }
 
-  private randomBetweenMs(minMs: number, maxMs: number): number {
-    const min = Math.floor(Math.min(minMs, maxMs))
-    const max = Math.floor(Math.max(minMs, maxMs))
-
-    if (max <= min) {
-      return min
-    }
-
-    return Math.floor(Math.random() * (max - min + 1)) + min
-  }
-
   private normalizePhone(rawNumber: string): string | null {
     const digits = String(rawNumber ?? '').replace(/\D/g, '')
 
-    if (!digits) {
+    if (!digits || digits.length < 10) {
       return null
     }
 
     const withCountryCode = digits.startsWith('55') ? digits : `55${digits}`
-
-    if (withCountryCode.length < 12) {
-      return null
-    }
-
     return withCountryCode
   }
 
   private calculateTypingDelay(message: string): number {
-    return Math.max(800, Math.min(15_000, message.length * 50))
+    // Proporcional ao texto: 50ms por caractere (min 1.5s, max 12s)
+    return Math.max(1500, Math.min(12000, message.length * 50))
   }
 }
