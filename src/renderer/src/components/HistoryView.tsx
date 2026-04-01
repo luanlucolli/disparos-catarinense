@@ -179,11 +179,27 @@ export default function HistoryView({ campaigns, setCampaigns }: Props) {
 
   const selected = campaigns.find((c) => c.id === selectedId) ?? null;
   const logs = selectedId ? campaignLogs[selectedId] ?? [] : [];
-  const fallbackLog =
-    selected?.status === "Falhou" && selected.sent === 0 && isScheduledConfig(selected.config)
-      ? OFFLINE_SCHEDULE_FAILURE_LOG
-      : null;
-  const displayLogs = logs.length > 0 ? logs : fallbackLog ? [fallbackLog] : [];
+
+  // CORREÇÃO: Fallback Inteligente para Campanhas sem Logs na Memória
+  const fallbackLog = (() => {
+    if (logs.length > 0) return null;
+
+    if (selected?.status === "Falhou") {
+      if (isScheduledConfig(selected.config) && selected.sent === 0) {
+        return OFFLINE_SCHEDULE_FAILURE_LOG;
+      }
+      return "[Sistema] Campanha interrompida: O aplicativo foi fechado durante a operação ou ocorreu um erro fatal.";
+    }
+
+    if (selected?.status === "Concluído") {
+      return "[Sistema] Campanha finalizada. (Logs detalhados não estão disponíveis após o reinício do aplicativo).";
+    }
+
+    return null;
+  })();
+
+  const displayLogs = fallbackLog && logs.length === 0 ? [fallbackLog] : logs;
+
   const showLogPanel =
     !!selected &&
     (displayLogs.length > 0 ||
@@ -192,6 +208,7 @@ export default function HistoryView({ campaigns, setCampaigns }: Props) {
       selected.status === "Aguardando" ||
       selected.status === "Agendado" ||
       selected.status === "Falhou");
+      
   const canPauseResume = selected?.status === "Em andamento" || selected?.status === "Pausado";
   const canCancel =
     selected?.status === "Em andamento" ||
@@ -351,10 +368,21 @@ export default function HistoryView({ campaigns, setCampaigns }: Props) {
     } catch (error) {
       console.error("[history] Falha ao pausar/retomar campanha:", error);
       const message = error instanceof Error ? error.message : String(error);
+      
+      // CORREÇÃO: Feedback específico e amigável
       if (message.includes("Já existe uma campanha em execução")) {
         toast({
-          title: "Não é possível retomar",
+          title: "Fila Ocupada",
           description: "Não é possível retomar. Já existe outra campanha rodando.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      if (message.includes("ainda não está pronto") || message.includes("indisponível")) {
+         toast({
+          title: "WhatsApp Desconectado",
+          description: "Conecte seu WhatsApp antes de retomar a campanha.",
           variant: "destructive",
         });
         return;
@@ -572,11 +600,13 @@ export default function HistoryView({ campaigns, setCampaigns }: Props) {
                         <p
                           key={`${line}-${index}`}
                           className={
-                            line.includes("❌")
+                            line.includes("❌") || line.includes("🛑")
                               ? "text-[hsl(0,72%,65%)]"
                               : line.includes("✅")
                                 ? "text-[hsl(142,64%,55%)]"
-                                : "text-[hsl(210,15%,55%)]"
+                                : line.includes("⚠️") || line.includes("⏰") || line.includes("🕒")
+                                  ? "text-amber-400"
+                                  : "text-[hsl(210,15%,55%)]"
                           }
                         >
                           {line}
