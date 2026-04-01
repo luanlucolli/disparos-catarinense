@@ -16,6 +16,8 @@ import { compileMessageForContact } from './MessageParser'
 
 const SCHEDULER_INTERVAL_MS = 60_000
 const SCHEDULER_TOLERANCE_MS = 90_000
+const INTER_CAMPAIGN_DELAY_MIN_MS = 20_000
+const INTER_CAMPAIGN_DELAY_MAX_MS = 45_000
 const OFFLINE_SCHEDULE_FAILURE_LOG =
   '[Sistema] Campanha cancelada: O aplicativo estava fechado no horário agendado.'
 
@@ -73,6 +75,10 @@ type ContactResult = {
   log: string
   contactStatus: string
   errorLog: string | null
+}
+
+type QueueProcessingOptions = {
+  applyHandoffDelay?: boolean
 }
 
 const formatClock = (date: Date): string => {
@@ -325,7 +331,7 @@ export class CampaignService {
     return true
   }
 
-  async processNextInQueue(): Promise<boolean> {
+  async processNextInQueue(options: QueueProcessingOptions = {}): Promise<boolean> {
     if (this.hasAnotherRunningCampaign()) {
       return false
     }
@@ -333,6 +339,8 @@ export class CampaignService {
     if (!this.dependencies.getClient()) {
       return false
     }
+
+    let handoffDelayApplied = false
 
     while (!this.hasAnotherRunningCampaign()) {
       const nextCampaign = getOldestCampaignByStatus('Aguardando')
@@ -363,6 +371,23 @@ export class CampaignService {
       }
 
       try {
+        if (options.applyHandoffDelay && !handoffDelayApplied) {
+          const handoffDelay = this.randomBetweenMs(INTER_CAMPAIGN_DELAY_MIN_MS, INTER_CAMPAIGN_DELAY_MAX_MS)
+          const handoffSeconds = Math.ceil(handoffDelay / 1000)
+
+          this.emitDetachedProgress(nextCampaign, {
+            status: 'Aguardando',
+            log: `${nowTag()} ⏳ Intervalo anti-ban entre campanhas: aguardando ${handoffSeconds}s antes de iniciar.`
+          })
+
+          await sleep(handoffDelay)
+          handoffDelayApplied = true
+
+          if (this.hasAnotherRunningCampaign() || !this.dependencies.getClient()) {
+            return false
+          }
+        }
+
         return await this.startCampaign(nextCampaign.id, nextConfig, nextMessages)
       } catch (error) {
         const errorMessage = safeMessage(error)
@@ -497,7 +522,7 @@ export class CampaignService {
       }
 
       try {
-        await this.processNextInQueue()
+        await this.processNextInQueue({ applyHandoffDelay: true })
       } catch (queueError) {
         console.error('[campaign] Erro ao processar próxima campanha da fila:', queueError)
       }
@@ -797,6 +822,17 @@ export class CampaignService {
   private randomBetweenSeconds(minDelay: number, maxDelay: number): number {
     const min = Math.floor(Math.min(toPositiveNumber(minDelay, 10), toPositiveNumber(maxDelay, 20)))
     const max = Math.floor(Math.max(toPositiveNumber(minDelay, 10), toPositiveNumber(maxDelay, 20)))
+
+    if (max <= min) {
+      return min
+    }
+
+    return Math.floor(Math.random() * (max - min + 1)) + min
+  }
+
+  private randomBetweenMs(minMs: number, maxMs: number): number {
+    const min = Math.floor(Math.min(minMs, maxMs))
+    const max = Math.floor(Math.max(minMs, maxMs))
 
     if (max <= min) {
       return min
