@@ -34,6 +34,8 @@ const looksLikePhoneHeader = (header: string): boolean => {
   return /(telefone|fone|numero|celular|whatsapp|phone)/i.test(header);
 };
 
+const PHONE_CANDIDATE_REGEX = /\+?\d[\d\s().-]{6,}\d/g;
+
 const deduplicateContacts = (contacts: CampaignContactInput[]): CampaignContactInput[] => {
   const map = new Map<string, CampaignContactInput>();
 
@@ -122,42 +124,34 @@ const parsePastedContacts = (input: string): CampaignContactInput[] => {
     const line = rawLine.trim();
     if (!line) continue;
 
-    const columns = line
-      .split(/[\t,;]+/)
-      .map((column) => column.trim())
-      .filter(Boolean);
+    const phoneMatches = line.match(PHONE_CANDIDATE_REGEX) ?? [];
 
-    if (columns.length === 0) continue;
+    let bestRawPhone = "";
+    let bestCleanedPhone = "";
 
-    if (columns.length === 1) {
-      const numberOnly = cleanNumber(columns[0]);
-      if (numberOnly) {
-        contacts.push({ name: "", number: numberOnly });
+    for (const candidate of phoneMatches) {
+      const cleanedCandidate = cleanNumber(candidate);
+      if (cleanedCandidate.length < 8) continue;
+
+      if (cleanedCandidate.length > bestCleanedPhone.length) {
+        bestRawPhone = candidate;
+        bestCleanedPhone = cleanedCandidate;
       }
+    }
+
+    if (!bestCleanedPhone) {
       continue;
     }
 
-    const firstAsNumber = cleanNumber(columns[0]);
-    const secondAsNumber = cleanNumber(columns[1]);
-
-    let name = columns[0] ?? "";
-    let number = secondAsNumber;
-
-    if (!secondAsNumber && firstAsNumber) {
-      name = columns[1] ?? "";
-      number = firstAsNumber;
-    }
-
-    if (!number) {
-      const numberCandidate = columns.find((column) => /\d/.test(column));
-      number = cleanNumber(numberCandidate);
-    }
-
-    if (!number) continue;
+    const name = line
+      .replace(bestRawPhone, " ")
+      .replace(/[|,;:\-]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
 
     contacts.push({
       name,
-      number,
+      number: bestCleanedPhone,
     });
   }
 
@@ -304,7 +298,7 @@ export default function StepContatos({ onNext }: StepContatosProps) {
               onChange={(e) => setPastedText(e.target.value)}
             />
             <p className="text-xs text-muted-foreground mt-2">
-              Formato aceito: Nome, Número ou Nome + Tab + Número.
+              Cole os números e nomes. Ex: João da Silva 47999991111.
             </p>
           </div>
 

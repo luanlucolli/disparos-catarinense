@@ -57,7 +57,6 @@ type CampaignServiceConfig = {
   cooldownMinutes: number
   cooldownEvery: number
   simulateTyping?: boolean
-  waitLinkPreview?: boolean
   scheduled?: boolean
   scheduleDate?: string | Date | null
   scheduleHour?: string

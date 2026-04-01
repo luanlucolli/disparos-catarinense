@@ -32,7 +32,6 @@ export interface CampaignConfig {
   cooldownMinutes: number;
   cooldownEvery: number;
   simulateTyping: boolean;
-  waitLinkPreview: boolean;
   scheduled: boolean;
   scheduleDate?: Date;
   scheduleHour: string;
@@ -54,7 +53,6 @@ export default function StepDisparo({ onBack, contactCount, onStartCampaign }: S
   const [cooldownMinutes, setCooldownMinutes] = useState(5);
   const [cooldownEvery, setCooldownEvery] = useState(20);
   const [simulateTyping, setSimulateTyping] = useState(true);
-  const [waitLinkPreview, setWaitLinkPreview] = useState(true);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [scheduled, setScheduled] = useState(false);
   const [scheduleDate, setScheduleDate] = useState<Date | undefined>(undefined);
@@ -88,7 +86,7 @@ export default function StepDisparo({ onBack, contactCount, onStartCampaign }: S
       contactCount: total,
       minDelay, maxDelay,
       cooldownEnabled, cooldownMinutes, cooldownEvery,
-      simulateTyping, waitLinkPreview,
+      simulateTyping,
       scheduled, scheduleDate, scheduleHour, scheduleMinute,
     });
   };
@@ -157,14 +155,6 @@ export default function StepDisparo({ onBack, contactCount, onStartCampaign }: S
               <p className="text-xs text-muted-foreground">Mostra "digitando..." no WhatsApp do cliente proporcional ao tamanho do texto.</p>
             </div>
             <Switch checked={simulateTyping} onCheckedChange={setSimulateTyping} />
-          </div>
-          <div className="border-t border-border/50" />
-          <div className="flex items-center justify-between gap-4">
-            <div className="space-y-0.5">
-              <p className="text-sm font-medium text-foreground">Aguardar miniatura de links</p>
-              <p className="text-xs text-muted-foreground">Gera a caixinha de pré-visualização se houver links na sua mensagem.</p>
-            </div>
-            <Switch checked={waitLinkPreview} onCheckedChange={setWaitLinkPreview} />
           </div>
         </CardContent>
       </Card>

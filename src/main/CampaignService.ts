@@ -34,7 +34,6 @@ export type CampaignServiceConfig = {
   cooldownMinutes: number
   cooldownEvery: number
   simulateTyping?: boolean
-  waitLinkPreview?: boolean
   scheduled?: boolean
   scheduleDate?: string | Date | null
   scheduleHour?: string
@@ -372,20 +371,24 @@ export class CampaignService {
       const finalMessage = parsedMessage || 'Olá, tudo bem?'
 
       if (config.simulateTyping) {
-        // Comportamento humano: simula digitação proporcional ao tamanho da mensagem.
+        // Comportamento humano anti-ban: 70% envia "digitando...", 30% apenas aguarda em silêncio.
         const typingDelay = this.calculateTypingDelay(finalMessage)
+        const shouldShowTyping = Math.random() > 0.3
 
-        try {
-          const chat = await client.getChatById(targetId)
-          await chat.sendStateTyping()
-          await this.delayWithControls(runtime, typingDelay)
-        } catch (typingError) {
-          console.warn('[campaign] Falha ao simular digitação:', typingError)
+        if (shouldShowTyping) {
+          try {
+            const chat = await client.getChatById(targetId)
+            await chat.sendStateTyping()
+          } catch (typingError) {
+            console.warn('[campaign] Falha ao simular digitação:', typingError)
+          }
         }
+
+        await this.delayWithControls(runtime, typingDelay)
       }
 
       await client.sendMessage(targetId, finalMessage, {
-        linkPreview: config.waitLinkPreview ?? true,
+        linkPreview: false,
         waitUntilMsgSent: true
       })
 
