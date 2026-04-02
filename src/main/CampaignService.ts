@@ -671,75 +671,68 @@ export class CampaignService {
         status: 'failed',
         contactStatus: 'failed',
         errorLog,
-        log: `${nowTag()} ❌ ${contact.name || 'Sem nome'} (${contact.number}): ${errorLog}`
+        log: `${nowTag()} ❌ ${contact.name || 'Contato sem nome'} (${contact.number}): ${errorLog}`
       }
     }
 
     const normalizedNumber = this.normalizePhone(contact.number)
     if (!normalizedNumber) {
-      const errorLog = 'Número inválido.'
+      const errorLog = 'Número inválido após limpeza de formato.'
       updateCampaignContactStatus(contact.id, 'failed', errorLog)
       return {
         status: 'failed',
         contactStatus: 'failed',
         errorLog,
-        log: `${nowTag()} ❌ ${contact.name || 'Sem nome'} (${contact.number}): ${errorLog}`
+        log: `${nowTag()} ❌ ${contact.name || 'Contato sem nome'} (${contact.number}): ${errorLog}`
       }
     }
 
-    const targetId = `${normalizedNumber}@c.us`
-    let resolvedTargetId = targetId
+    const formattedNumber = `${normalizedNumber}@c.us`
 
     try {
-      // 1. BLINDAGEM OTIMIZADA: Substituímos isRegisteredUser + getNumberId por apenas getNumberId.
-      // Isso corta as requisições na API da Meta pela METADE, reduzindo o comportamento de bot.
-      try {
-        const registrationProbeDelayMs = 500 + Math.floor(Math.random() * 1001)
-        await sleep(registrationProbeDelayMs)
+      // Retornando à estratégia antiga que era super estável: usa apenas getNumberId.
+      const numberId = await client.getNumberId(formattedNumber)
+      const targetId = numberId?._serialized ?? formattedNumber
 
-        const numberId = await client.getNumberId(targetId)
-        
-        if (!numberId || !numberId._serialized) {
-          const errorLog = 'Não possui WhatsApp.'
-          updateCampaignContactStatus(contact.id, 'failed', errorLog)
-          return {
-            status: 'failed',
-            contactStatus: 'failed',
-            errorLog,
-            log: `${nowTag()} ❌ ${contact.name || 'Sem nome'} (${contact.number}): ${errorLog}`
-          }
+      if (!numberId) {
+        const errorLog = 'Número inválido no WhatsApp.'
+        updateCampaignContactStatus(contact.id, 'failed', errorLog)
+        return {
+          status: 'failed',
+          contactStatus: 'failed',
+          errorLog,
+          log: `${nowTag()} ❌ ${contact.name || 'Contato sem nome'} (${contact.number}): ${errorLog}`
         }
-        
-        resolvedTargetId = numberId._serialized
-      } catch (valError) {
-        console.warn(`[campaign] Verificação de ID falhou, usando fallback direto para ${targetId}...`, safeMessage(valError))
       }
 
       const randomMessage = messages[Math.floor(Math.random() * messages.length)]
       const parsedMessage = compileMessageForContact(randomMessage, contact.name)
-      const finalMessage = parsedMessage || 'Olá!'
+      const finalMessage = parsedMessage || 'Olá, tudo bem?'
 
       if (config.simulateTyping) {
+        // A lógica secreta da versão antiga: 30% das vezes ele NÃO envia o typing.
+        // Isso alivia tremendamente o tráfego do protocolo CDP (Puppeteer).
         const typingDelay = this.calculateTypingDelay(finalMessage)
-        try {
-          const chat = await client.getChatById(resolvedTargetId)
-          await chat.sendStateTyping()
-          await this.delayWithControls(runtime, typingDelay)
+        const shouldShowTyping = Math.random() > 0.3
 
+        if (shouldShowTyping) {
           try {
-            await chat.clearState()
-          } catch (clearError) {
-            console.warn('[campaign] Falha ao limpar estado de digitação:', clearError)
+            const chat = await client.getChatById(targetId)
+            await chat.sendStateTyping()
+            // Obs: Removido o chat.clearState() que existia na versão que dava erro.
+            // O WhatsApp web já limpa o typing sozinho ao receber a mensagem!
+          } catch (typingError) {
+            console.warn('[campaign] Falha leve ao simular digitação:', safeMessage(typingError))
           }
-        } catch (typingError) {
-          console.warn('[campaign] Falha ao simular digitação (chat inexistente na memória local):', typingError)
-          await this.delayWithControls(runtime, typingDelay)
         }
+
+        await this.delayWithControls(runtime, typingDelay)
       }
 
-      // ENVIO PURO SEM TRAVAR O NODE.JS (sem waitUntilMsgSent)
-      await client.sendMessage(resolvedTargetId, finalMessage, {
-        linkPreview: false
+      // O waitUntilMsgSent: true obriga a fila a respeitar o tempo do celular de verdade
+      await client.sendMessage(targetId, finalMessage, {
+        linkPreview: false,
+        waitUntilMsgSent: true
       })
 
       updateCampaignContactStatus(contact.id, 'success', null)
@@ -748,7 +741,7 @@ export class CampaignService {
         status: 'success',
         contactStatus: 'success',
         errorLog: null,
-        log: `${nowTag()} ✅ Enviado — ${contact.name || 'Sem nome'} (${contact.number})`
+        log: `${nowTag()} ✅ Sucesso — ${contact.name || 'Contato sem nome'} (${contact.number})`
       }
     } catch (error) {
       const errorLog = safeMessage(error)
@@ -757,7 +750,7 @@ export class CampaignService {
         status: 'failed',
         contactStatus: 'failed',
         errorLog,
-        log: `${nowTag()} ❌ Erro de Envio — ${contact.name || 'Sem nome'} (${contact.number}): ${errorLog}`
+        log: `${nowTag()} ❌ Falha — ${contact.name || 'Contato sem nome'} (${contact.number}): ${errorLog}`
       }
     }
   }
@@ -918,7 +911,7 @@ export class CampaignService {
   private normalizePhone(rawNumber: string): string | null {
     const digits = String(rawNumber ?? '').replace(/\D/g, '')
 
-    if (!digits || digits.length < 10) {
+    if (!digits) {
       return null
     }
 
@@ -932,9 +925,6 @@ export class CampaignService {
   }
 
   private calculateTypingDelay(message: string): number {
-    const baseDelay = Math.max(1500, Math.min(12000, message.length * 50))
-    const varianceFactor = 1 + (Math.random() * 0.2 - 0.1)
-    const variedDelay = Math.round(baseDelay * varianceFactor)
-    return Math.max(1500, Math.min(12000, variedDelay))
+    return Math.max(800, Math.min(15000, message.length * 50))
   }
 }
