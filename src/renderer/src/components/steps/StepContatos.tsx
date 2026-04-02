@@ -3,7 +3,7 @@ import * as XLSX from "xlsx";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Upload, CheckCircle2, FileSpreadsheet, AlertCircle } from "lucide-react";
+import { Upload, CheckCircle2, FileSpreadsheet, AlertCircle, Download } from "lucide-react";
 
 export type CampaignContactInput = {
   name: string;
@@ -238,6 +238,21 @@ export default function StepContatos({ onNext }: StepContatosProps) {
     e.target.value = "";
   };
 
+  const handleDownloadXlsxTemplate = () => {
+    const sheetRows = [
+      ["nome", "numero"],
+      ["Joao Silva", "47999991111"],
+      ["Maria Oliveira", "47999992222"],
+      ["Contato sem nome", "47999993333"],
+    ];
+
+    const worksheet = XLSX.utils.aoa_to_sheet(sheetRows);
+    const workbook = XLSX.utils.book_new();
+
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Contatos");
+    XLSX.writeFile(workbook, "template-contatos.xlsx");
+  };
+
   return (
     <div className="space-y-6">
       <div>
@@ -280,6 +295,13 @@ export default function StepContatos({ onNext }: StepContatosProps) {
             {!!uploadedFileName && !isParsingFile && (
               <p className="text-xs text-primary mt-3 font-medium">Arquivo carregado: {uploadedFileName}</p>
             )}
+          </div>
+
+          <div className="flex justify-center">
+            <Button variant="outline" size="sm" className="gap-2" onClick={handleDownloadXlsxTemplate}>
+              <Download className="w-4 h-4" />
+              Baixar template XLSX
+            </Button>
           </div>
 
           <div className="flex items-center gap-4">

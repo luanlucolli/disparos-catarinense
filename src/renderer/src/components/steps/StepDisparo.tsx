@@ -46,6 +46,14 @@ function formatDuration(totalSeconds: number): string {
   return `~${hours}h ${minutes}min`;
 }
 
+function isSameCalendarDate(dateA: Date, dateB: Date): boolean {
+  return (
+    dateA.getFullYear() === dateB.getFullYear() &&
+    dateA.getMonth() === dateB.getMonth() &&
+    dateA.getDate() === dateB.getDate()
+  );
+}
+
 export default function StepDisparo({ onBack, contactCount, onStartCampaign }: StepDisparoProps) {
   const [minDelay, setMinDelay] = useState(15);
   const [maxDelay, setMaxDelay] = useState(30);
@@ -56,13 +64,97 @@ export default function StepDisparo({ onBack, contactCount, onStartCampaign }: S
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [scheduled, setScheduled] = useState(false);
   const [scheduleDate, setScheduleDate] = useState<Date | undefined>(undefined);
-  const [scheduleHour, setScheduleHour] = useState("09");
-  const [scheduleMinute, setScheduleMinute] = useState("00");
+  const [scheduleHour, setScheduleHour] = useState(() => String(new Date().getHours()).padStart(2, "0"));
+  const [scheduleMinute, setScheduleMinute] = useState(() => String(new Date().getMinutes()).padStart(2, "0"));
 
   const total = Math.max(0, contactCount);
 
   const handleMinBlur = () => { if (minDelay > maxDelay) setMaxDelay(minDelay); };
   const handleMaxBlur = () => { if (maxDelay < minDelay) setMinDelay(maxDelay); };
+
+  const now = new Date();
+  const scheduleHourNumber = Number(scheduleHour);
+  const isScheduleDateToday = Boolean(scheduleDate && isSameCalendarDate(scheduleDate, now));
+  const minAllowedHour = isScheduleDateToday ? now.getHours() : 0;
+  const minAllowedMinute =
+    isScheduleDateToday && scheduleHourNumber === now.getHours() ? now.getMinutes() : 0;
+
+  const handleScheduleDateChange = (date: Date | undefined) => {
+    setScheduleDate(date);
+
+    if (!date) {
+      return;
+    }
+
+    const currentDate = new Date();
+    if (!isSameCalendarDate(date, currentDate)) {
+      return;
+    }
+
+    const currentHour = currentDate.getHours();
+    const currentMinute = currentDate.getMinutes();
+    const selectedHour = Number(scheduleHour);
+    const selectedMinute = Number(scheduleMinute);
+
+    if (selectedHour < currentHour) {
+      setScheduleHour(String(currentHour).padStart(2, "0"));
+      setScheduleMinute(String(currentMinute).padStart(2, "0"));
+      return;
+    }
+
+    if (selectedHour === currentHour && selectedMinute < currentMinute) {
+      setScheduleMinute(String(currentMinute).padStart(2, "0"));
+    }
+  };
+
+  const handleScheduleHourChange = (rawHour: string) => {
+    const parsedHour = Number(rawHour);
+    const currentDate = new Date();
+    const isToday = Boolean(scheduleDate && isSameCalendarDate(scheduleDate, currentDate));
+    const minHour = isToday ? currentDate.getHours() : 0;
+    const safeHour = Number.isFinite(parsedHour) ? parsedHour : minHour;
+    const clampedHour = Math.min(23, Math.max(minHour, safeHour));
+
+    setScheduleHour(String(clampedHour).padStart(2, "0"));
+
+    if (isToday && clampedHour === currentDate.getHours()) {
+      setScheduleMinute((previousMinute) => {
+        const previousMinuteNumber = Number(previousMinute);
+        const safeMinute = Number.isFinite(previousMinuteNumber)
+          ? previousMinuteNumber
+          : currentDate.getMinutes();
+        const clampedMinute = Math.min(59, Math.max(currentDate.getMinutes(), safeMinute));
+        return String(clampedMinute).padStart(2, "0");
+      });
+    }
+  };
+
+  const handleScheduleMinuteChange = (rawMinute: string) => {
+    const parsedMinute = Number(rawMinute);
+    const currentDate = new Date();
+    const isToday = Boolean(scheduleDate && isSameCalendarDate(scheduleDate, currentDate));
+    const selectedHour = Number(scheduleHour);
+    const minMinute = isToday && selectedHour === currentDate.getHours() ? currentDate.getMinutes() : 0;
+    const safeMinute = Number.isFinite(parsedMinute) ? parsedMinute : minMinute;
+    const clampedMinute = Math.min(59, Math.max(minMinute, safeMinute));
+
+    setScheduleMinute(String(clampedMinute).padStart(2, "0"));
+  };
+
+  // VERIFICAÇÃO EM TEMPO REAL DE DATA EXPIRADA
+  const isPastSchedule = useMemo(() => {
+    if (!scheduled || !scheduleDate) return false;
+    const currentTime = new Date();
+    const selectedTime = new Date(
+      scheduleDate.getFullYear(),
+      scheduleDate.getMonth(),
+      scheduleDate.getDate(),
+      Number(scheduleHour),
+      Number(scheduleMinute),
+      0
+    );
+    return selectedTime.getTime() <= currentTime.getTime();
+  }, [scheduled, scheduleDate, scheduleHour, scheduleMinute]);
 
   const estimation = useMemo(() => {
     if (total <= 0) return null;
@@ -73,12 +165,12 @@ export default function StepDisparo({ onBack, contactCount, onStartCampaign }: S
     if (cooldownEnabled && cooldownEvery > 0) {
       totalTime += Math.floor(total / cooldownEvery) * cooldownMinutes * 60;
     }
-    const endDate = scheduled && scheduleDate
+    const endDate = scheduled && scheduleDate && !isPastSchedule
       ? new Date(scheduleDate.getFullYear(), scheduleDate.getMonth(), scheduleDate.getDate(), Number(scheduleHour), Number(scheduleMinute), 0)
       : new Date();
     const finishDate = new Date(endDate.getTime() + totalTime * 1000);
     return { totalTime, finishDate };
-  }, [total, minDelay, maxDelay, cooldownEnabled, cooldownMinutes, cooldownEvery, scheduled, scheduleDate, scheduleHour, scheduleMinute]);
+  }, [total, minDelay, maxDelay, cooldownEnabled, cooldownMinutes, cooldownEvery, scheduled, scheduleDate, scheduleHour, scheduleMinute, isPastSchedule]);
 
   const confirmStart = () => {
     setConfirmOpen(false);
@@ -172,29 +264,36 @@ export default function StepDisparo({ onBack, contactCount, onStartCampaign }: S
             <Switch checked={scheduled} onCheckedChange={setScheduled} />
           </div>
           {scheduled && (
-            <div className="flex flex-col sm:flex-row items-start gap-6 bg-muted/50 rounded-lg p-4 mt-2 animate-in fade-in slide-in-from-top-2">
-              <div className="flex flex-col space-y-2">
-                <Label className="text-sm font-medium text-foreground">Data do Envio</Label>
-                <Popover>
-                  <PopoverTrigger asChild>
-                    <Button variant="outline" className={cn("w-[240px] justify-start text-left font-normal bg-background h-10", !scheduleDate && "text-muted-foreground")}>
-                      <CalendarIcon className="mr-2 h-4 w-4 opacity-70" />
-                      {scheduleDate ? format(scheduleDate, "dd 'de' MMMM, yyyy", { locale: ptBR }) : "Selecionar data"}
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent className="w-auto p-0" align="start">
-                    <Calendar mode="single" selected={scheduleDate} onSelect={setScheduleDate} disabled={(date) => date < new Date(new Date().setHours(0, 0, 0, 0))} locale={ptBR} className="p-3 pointer-events-auto" />
-                  </PopoverContent>
-                </Popover>
-              </div>
-              <div className="flex flex-col space-y-2">
-                <Label className="text-sm font-medium text-foreground">Horário de Início</Label>
-                <div className="flex items-center gap-2">
-                  <Input type="number" min={0} max={23} value={scheduleHour} onChange={(e) => setScheduleHour(String(Math.min(23, Math.max(0, Number(e.target.value)))).padStart(2, "0"))} className="h-10 w-16 text-center text-base bg-background font-medium" />
-                  <span className="text-lg font-bold text-muted-foreground pb-1">:</span>
-                  <Input type="number" min={0} max={59} value={scheduleMinute} onChange={(e) => setScheduleMinute(String(Math.min(59, Math.max(0, Number(e.target.value)))).padStart(2, "0"))} className="h-10 w-16 text-center text-base bg-background font-medium" />
+            <div className="flex flex-col items-start gap-2 mt-2 animate-in fade-in slide-in-from-top-2">
+              <div className="flex flex-col sm:flex-row items-start gap-6 bg-muted/50 rounded-lg p-4 w-full">
+                <div className="flex flex-col space-y-2">
+                  <Label className="text-sm font-medium text-foreground">Data do Envio</Label>
+                  <Popover>
+                    <PopoverTrigger asChild>
+                      <Button variant="outline" className={cn("w-[240px] justify-start text-left font-normal bg-background h-10", !scheduleDate && "text-muted-foreground", isPastSchedule && "border-destructive text-destructive")}>
+                        <CalendarIcon className="mr-2 h-4 w-4 opacity-70" />
+                        {scheduleDate ? format(scheduleDate, "dd 'de' MMMM, yyyy", { locale: ptBR }) : "Selecionar data"}
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-auto p-0" align="start">
+                      <Calendar mode="single" selected={scheduleDate} onSelect={handleScheduleDateChange} disabled={(date) => date < new Date(new Date().setHours(0, 0, 0, 0))} locale={ptBR} className="p-3 pointer-events-auto" />
+                    </PopoverContent>
+                  </Popover>
+                </div>
+                <div className="flex flex-col space-y-2">
+                  <Label className="text-sm font-medium text-foreground">Horário de Início</Label>
+                  <div className="flex items-center gap-2">
+                    <Input type="number" min={minAllowedHour} max={23} value={scheduleHour} onChange={(e) => handleScheduleHourChange(e.target.value)} className={cn("h-10 w-16 text-center text-base bg-background font-medium", isPastSchedule && "border-destructive text-destructive")} />
+                    <span className="text-lg font-bold text-muted-foreground pb-1">:</span>
+                    <Input type="number" min={minAllowedMinute} max={59} value={scheduleMinute} onChange={(e) => handleScheduleMinuteChange(e.target.value)} className={cn("h-10 w-16 text-center text-base bg-background font-medium", isPastSchedule && "border-destructive text-destructive")} />
+                  </div>
                 </div>
               </div>
+              {isPastSchedule && (
+                <p className="text-xs text-destructive font-medium px-2">
+                  O horário de agendamento precisa ser no futuro.
+                </p>
+              )}
             </div>
           )}
         </CardContent>
@@ -235,7 +334,7 @@ export default function StepDisparo({ onBack, contactCount, onStartCampaign }: S
         <Button variant="ghost" size="lg" className="text-base gap-2 py-6 text-muted-foreground hover:text-foreground" onClick={onBack}>
           <ArrowLeft className="w-4 h-4" /> Voltar
         </Button>
-        <Button size="lg" className="text-lg px-10 py-7 gap-2 shadow-lg hover:shadow-primary/20 transition-all duration-300" onClick={() => setConfirmOpen(true)} disabled={(scheduled && !scheduleDate) || total <= 0}>
+        <Button size="lg" className="text-lg px-10 py-7 gap-2 shadow-lg hover:shadow-primary/20 transition-all duration-300" onClick={() => setConfirmOpen(true)} disabled={(scheduled && (!scheduleDate || isPastSchedule)) || total <= 0}>
           {scheduled ? (<><CalendarClock className="w-5 h-5" /> Agendar Disparo</>) : (<><Rocket className="w-5 h-5" /> Iniciar Disparos</>)}
         </Button>
       </div>
