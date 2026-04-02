@@ -11,7 +11,6 @@ import {
   FileSpreadsheet,
   AlertCircle,
   Download,
-  FileText,
   Trash2,
   Users
 } from "lucide-react";
