@@ -3,7 +3,19 @@ import * as XLSX from "xlsx";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Upload, CheckCircle2, FileSpreadsheet, AlertCircle, Download } from "lucide-react";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Badge } from "@/components/ui/badge";
+import {
+  Upload,
+  CheckCircle2,
+  FileSpreadsheet,
+  AlertCircle,
+  Download,
+  FileText,
+  Trash2,
+  Users
+} from "lucide-react";
+import { cn } from "@/lib/utils";
 
 export type CampaignContactInput = {
   name: string;
@@ -47,14 +59,7 @@ const deduplicateContacts = (contacts: CampaignContactInput[]): CampaignContactI
       number: contact.number.trim(),
     };
 
-    const existing = map.get(normalizedContact.number);
-
-    if (!existing) {
-      map.set(normalizedContact.number, normalizedContact);
-      continue;
-    }
-
-    if (!existing.name && normalizedContact.name) {
+    if (!map.has(normalizedContact.number)) {
       map.set(normalizedContact.number, normalizedContact);
     }
   }
@@ -159,22 +164,23 @@ const parsePastedContacts = (input: string): CampaignContactInput[] => {
 };
 
 export default function StepContatos({ onNext }: StepContatosProps) {
+  const [inputMode, setInputMode] = useState<"upload" | "paste">("upload");
+  const [isDragging, setIsDragging] = useState(false);
+
   const [uploadedContacts, setUploadedContacts] = useState<CampaignContactInput[]>([]);
   const [uploadedFileName, setUploadedFileName] = useState("");
-  const [pastedText, setPastedText] = useState("");
   const [isParsingFile, setIsParsingFile] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
+
+  const [pastedText, setPastedText] = useState("");
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const pastedContacts = useMemo(() => parsePastedContacts(pastedText), [pastedText]);
 
-  const allContacts = useMemo(
-    () => deduplicateContacts([...uploadedContacts, ...pastedContacts]),
-    [uploadedContacts, pastedContacts]
-  );
-
-  const hasContacts = allContacts.length > 0;
+  // Apenas os contatos da aba ativa serão considerados
+  const activeContacts = inputMode === "upload" ? uploadedContacts : pastedContacts;
+  const hasContacts = activeContacts.length > 0;
 
   const handleReadFile = useCallback(async (file: File) => {
     setIsParsingFile(true);
@@ -216,11 +222,23 @@ export default function StepContatos({ onNext }: StepContatosProps) {
       setFileError(error instanceof Error ? error.message : "Erro ao processar arquivo.");
     } finally {
       setIsParsingFile(false);
+      setIsDragging(false);
     }
   }, []);
 
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragging(false);
+  };
+
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
+    setIsDragging(false);
 
     const file = e.dataTransfer.files?.[0];
     if (!file) return;
@@ -233,9 +251,16 @@ export default function StepContatos({ onNext }: StepContatosProps) {
     if (!file) return;
 
     void handleReadFile(file);
-
-    // Permite selecionar o mesmo arquivo novamente.
     e.target.value = "";
+  };
+
+  const handleClearFile = () => {
+    setUploadedContacts([]);
+    setUploadedFileName("");
+    setFileError(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
   };
 
   const handleDownloadXlsxTemplate = () => {
@@ -261,82 +286,150 @@ export default function StepContatos({ onNext }: StepContatosProps) {
       </div>
 
       <Card className="border-0 shadow-card">
-        <CardContent className="p-6 space-y-6">
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".xlsx,.xls,.csv"
-            className="hidden"
-            onChange={handleInputChange}
-          />
-
-          <div
-            className="drop-zone"
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={handleDrop}
-            onClick={() => fileInputRef.current?.click()}
-            role="button"
-            tabIndex={0}
+        <CardContent className="p-6">
+          <Tabs
+            defaultValue="upload"
+            value={inputMode}
+            onValueChange={(val) => setInputMode(val as "upload" | "paste")}
+            className="w-full"
           >
-            <div className="w-14 h-14 rounded-full bg-secondary flex items-center justify-center mx-auto mb-4">
-              <Upload className="w-6 h-6 text-primary" />
-            </div>
-            <p className="text-base font-medium mb-1">Arraste sua planilha aqui</p>
-            <p className="text-sm text-muted-foreground">ou clique para selecionar</p>
-            <div className="flex items-center justify-center gap-2 mt-3 text-xs text-muted-foreground">
-              <FileSpreadsheet className="w-4 h-4" />
-              <span>Aceita arquivos .xlsx, .xls e .csv</span>
-            </div>
+            <TabsList className="grid w-full max-w-md grid-cols-2 mb-6">
+              <TabsTrigger value="upload" className="text-sm">Importar Planilha</TabsTrigger>
+              <TabsTrigger value="paste" className="text-sm">Colar Manualmente</TabsTrigger>
+            </TabsList>
 
-            {isParsingFile && (
-              <p className="text-xs text-muted-foreground mt-3">Processando arquivo...</p>
-            )}
+            <TabsContent value="upload" className="space-y-4 outline-none">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                className="hidden"
+                onChange={handleInputChange}
+              />
 
-            {!!uploadedFileName && !isParsingFile && (
-              <p className="text-xs text-primary mt-3 font-medium">Arquivo carregado: {uploadedFileName}</p>
-            )}
-          </div>
+              {uploadedFileName ? (
+                <div className="border border-border bg-muted/30 rounded-xl p-6 flex flex-col sm:flex-row items-center justify-between gap-4 animate-in fade-in zoom-in-95">
+                  <div className="flex items-center gap-4">
+                    <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
+                      <FileSpreadsheet className="w-6 h-6 text-primary" />
+                    </div>
+                    <div>
+                      <p className="font-medium text-foreground">{uploadedFileName}</p>
+                      <p className="text-sm text-muted-foreground">{uploadedContacts.length} contatos identificados</p>
+                    </div>
+                  </div>
+                  <Button variant="outline" size="sm" onClick={handleClearFile} className="text-destructive hover:text-destructive hover:bg-destructive/10">
+                    <Trash2 className="w-4 h-4 mr-2" />
+                    Remover
+                  </Button>
+                </div>
+              ) : (
+                <div
+                  onDragOver={handleDragOver}
+                  onDragLeave={handleDragLeave}
+                  onDrop={handleDrop}
+                  onClick={() => fileInputRef.current?.click()}
+                  role="button"
+                  tabIndex={0}
+                  className={cn(
+                    "border-2 border-dashed rounded-xl p-8 transition-all duration-200 ease-in-out flex flex-col items-center justify-center text-center cursor-pointer group",
+                    isDragging
+                      ? "border-primary bg-primary/5 scale-[1.01]"
+                      : "border-border hover:border-primary/50 hover:bg-muted/30"
+                  )}
+                >
+                  <div className={cn(
+                    "w-14 h-14 rounded-full flex items-center justify-center mb-4 transition-colors",
+                    isDragging ? "bg-primary text-primary-foreground" : "bg-secondary text-primary group-hover:bg-primary/10"
+                  )}>
+                    <Upload className="w-6 h-6" />
+                  </div>
+                  <p className="text-base font-medium mb-1">
+                    {isDragging ? "Solte o arquivo aqui" : "Arraste sua planilha aqui"}
+                  </p>
+                  <p className="text-sm text-muted-foreground">ou clique para selecionar no computador</p>
 
-          <div className="flex justify-center">
-            <Button variant="outline" size="sm" className="gap-2" onClick={handleDownloadXlsxTemplate}>
-              <Download className="w-4 h-4" />
-              Baixar template XLSX
-            </Button>
-          </div>
+                  <div className="flex items-center justify-center gap-2 mt-4 text-xs text-muted-foreground font-medium bg-background px-3 py-1.5 rounded-md shadow-sm border border-border/50">
+                    <FileSpreadsheet className="w-4 h-4" />
+                    <span>Formatos aceitos: .xlsx, .xls, .csv</span>
+                  </div>
 
-          <div className="flex items-center gap-4">
-            <div className="flex-1 h-px bg-border" />
-            <span className="text-xs text-muted-foreground font-medium">OU</span>
-            <div className="flex-1 h-px bg-border" />
-          </div>
+                  {isParsingFile && (
+                    <p className="text-xs text-primary animate-pulse mt-4 font-medium">Processando contatos...</p>
+                  )}
+                </div>
+              )}
 
-          <div>
-            <label className="text-sm font-medium mb-2 block">Cole os números e nomes aqui</label>
-            <Textarea
-              placeholder={"João, 47999991111\nMaria, 47999992222\nAna\t47999993333"}
-              rows={5}
-              className="text-base resize-none"
-              value={pastedText}
-              onChange={(e) => setPastedText(e.target.value)}
-            />
-            <p className="text-xs text-muted-foreground mt-2">
-              Cole os números e nomes. Ex: João da Silva 47999991111.
-            </p>
-          </div>
+              {!uploadedFileName && (
+                <div className="flex justify-start pt-2">
+                  <Button variant="link" size="sm" className="text-muted-foreground hover:text-primary gap-2 px-0" onClick={handleDownloadXlsxTemplate}>
+                    <Download className="w-4 h-4" />
+                    Baixar planilha de exemplo
+                  </Button>
+                </div>
+              )}
 
-          {fileError && (
-            <div className="flex items-center gap-3 bg-destructive/10 text-destructive rounded-lg px-4 py-3">
-              <AlertCircle className="w-5 h-5 shrink-0" />
-              <span className="text-sm font-medium">{fileError}</span>
-            </div>
-          )}
+              {fileError && (
+                <div className="flex items-center gap-3 bg-destructive/10 text-destructive rounded-lg px-4 py-3 animate-in fade-in slide-in-from-top-2">
+                  <AlertCircle className="w-5 h-5 shrink-0" />
+                  <span className="text-sm font-medium">{fileError}</span>
+                </div>
+              )}
+            </TabsContent>
+
+            <TabsContent value="paste" className="space-y-4 outline-none">
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="text-sm font-medium">Lista de Números</label>
+                  {pastedText.trim().length > 0 && (
+                    <Button variant="ghost" size="sm" onClick={() => setPastedText("")} className="h-8 text-muted-foreground hover:text-destructive">
+                      Limpar texto
+                    </Button>
+                  )}
+                </div>
+                <Textarea
+                  placeholder={"Exemplos aceitos:\n\nJoão, 47999991111\nMaria Silva - (47) 9999-2222\n47999993333"}
+                  rows={8}
+                  className="text-base resize-none font-mono"
+                  value={pastedText}
+                  onChange={(e) => setPastedText(e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground mt-2">
+                  Cole um contato por linha. O sistema identificará automaticamente o nome e o telefone.
+                </p>
+              </div>
+            </TabsContent>
+          </Tabs>
 
           {hasContacts && (
-            <div className="flex items-center gap-3 bg-success/10 text-success rounded-lg px-4 py-3">
-              <CheckCircle2 className="w-5 h-5 shrink-0" />
-              <span className="text-sm font-medium">
-                {allContacts.length} contatos válidos prontos para o disparo
-              </span>
+            <div className="mt-8 border border-success/20 bg-success/5 rounded-xl p-5 animate-in fade-in zoom-in-95">
+              <div className="flex items-start sm:items-center gap-4 flex-col sm:flex-row">
+                <div className="w-10 h-10 rounded-full bg-success/20 flex items-center justify-center shrink-0">
+                  <CheckCircle2 className="w-5 h-5 text-success" />
+                </div>
+                <div className="flex-1">
+                  {/* Cor alterada para text-green-800 para melhor contraste */}
+                  <h4 className="text-sm font-bold text-green-800 mb-1">
+                    {activeContacts.length} {activeContacts.length === 1 ? "contato pronto" : "contatos prontos"} para envio
+                  </h4>
+
+                  {/* Mini Preview Inteligente */}
+                  <div className="flex flex-wrap gap-2 mt-2">
+                    {activeContacts.slice(0, 3).map((contact, idx) => (
+                      <Badge key={idx} variant="secondary" className="bg-background/50 border-success/20 text-xs font-normal">
+                        <Users className="w-3 h-3 mr-1.5 opacity-50 text-green-700" />
+                        <span className="truncate max-w-[120px] font-medium mr-1 text-green-900">{contact.name || "Sem nome"}</span>
+                        <span className="text-muted-foreground">{contact.number}</span>
+                      </Badge>
+                    ))}
+                    {activeContacts.length > 3 && (
+                      <Badge variant="outline" className="text-xs bg-transparent border-dashed text-green-800 border-green-300">
+                        + {activeContacts.length - 3} contatos
+                      </Badge>
+                    )}
+                  </div>
+                </div>
+              </div>
             </div>
           )}
         </CardContent>
@@ -345,9 +438,9 @@ export default function StepContatos({ onNext }: StepContatosProps) {
       <div className="flex justify-end">
         <Button
           size="lg"
-          className="text-base px-8 py-6"
+          className="text-base px-8 py-6 shadow-lg hover:shadow-primary/20 transition-all"
           disabled={!hasContacts || isParsingFile}
-          onClick={() => onNext(allContacts)}
+          onClick={() => onNext(activeContacts)}
         >
           Próximo Passo →
         </Button>
