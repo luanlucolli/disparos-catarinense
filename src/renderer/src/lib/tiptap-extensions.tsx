@@ -8,6 +8,29 @@ const stopEditorEvent = (e: React.MouseEvent | MouseEvent) => {
   e.stopPropagation();
 };
 
+const NAME_VARIABLE_TOKENS = new Set(["nome_do_cliente", "nome", "name", "first_name"]);
+const GREETING_VARIABLE_TOKENS = new Set(["saudacao"]);
+
+const getCurrentGreeting = (): string => {
+  const hour = new Date().getHours();
+
+  if (hour >= 5 && hour <= 11) return "Bom dia";
+  if (hour >= 12 && hour <= 17) return "Boa tarde";
+  return "Boa noite";
+};
+
+const getPreviewValueForVariable = (variableName: unknown): string => {
+  if (typeof variableName !== "string") return "João";
+
+  const normalized = variableName.trim().toLowerCase();
+  if (!normalized) return "João";
+
+  if (NAME_VARIABLE_TOKENS.has(normalized)) return "João";
+  if (GREETING_VARIABLE_TOKENS.has(normalized)) return getCurrentGreeting();
+
+  return `{{${normalized}}}`;
+};
+
 export const VariableNode = Node.create({
   name: "variable",
   group: "inline",
@@ -207,7 +230,7 @@ export const SpintaxNode = Node.create({
 export function generatePreviewText(node: any): string {
   if (!node) return "";
   if (node.type === "text") return node.text || "";
-  if (node.type === "variable") return "João";
+  if (node.type === "variable") return getPreviewValueForVariable(node.attrs?.name);
   if (node.type === "spintax") {
     const options = Array.isArray(node.attrs?.options) ? node.attrs.options : [];
     return options[Math.floor(Math.random() * options.length)] || "";

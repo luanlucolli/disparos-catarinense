@@ -9,7 +9,7 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Plus, Pencil, Trash2, UserPlus, Sparkles } from "lucide-react";
+import { Plus, Pencil, Trash2, UserPlus, Sparkles, Sun } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import SpintaxModal from "@/components/SpintaxModal";
 import type { Template } from "@/pages/Index";
@@ -185,6 +185,14 @@ export default function TemplatesView({ templates, setTemplates }: Props) {
     ]).run();
   };
 
+  const insertGreetingVariable = () => {
+    if (!editor) return;
+    editor.chain().focus().insertContent([
+      { type: "variable", attrs: { name: "saudacao" } },
+      { type: "text", text: " " },
+    ]).run();
+  };
+
   const openNewSpintaxModal = () => {
     setEditingSpintaxPos(null);
     setEditingSpintaxOptions([]);
@@ -286,6 +294,9 @@ export default function TemplatesView({ templates, setTemplates }: Props) {
               </Button>
               <Button variant="outline" size="sm" className="gap-1.5" onClick={openNewSpintaxModal}>
                 <Sparkles className="w-4 h-4" /> Palavras Alternativas
+              </Button>
+              <Button variant="outline" size="sm" className="gap-1.5" onClick={insertGreetingVariable}>
+                <Sun className="w-4 h-4" /> Saudação Automática
               </Button>
             </div>
 

@@ -1,6 +1,7 @@
 // Responsável por normalizar payloads de mensagem (TipTap/Texto),
 // aplicar variáveis e resolver spintax antes do envio.
 const VARIABLE_TOKENS = ['nome_do_cliente', 'nome', 'name', 'first_name']
+const GREETING_TOKENS = ['saudacao']
 const INVALID_NAME_VALUES = new Set([
   '',
   '-',
@@ -43,6 +44,20 @@ const sanitizeName = (contactName: string | null | undefined): string | null => 
   }
 
   return sanitized
+}
+
+const getCurrentGreeting = (): string => {
+  const hour = new Date().getHours()
+
+  if (hour >= 5 && hour <= 11) {
+    return 'Bom dia'
+  }
+
+  if (hour >= 12 && hour <= 17) {
+    return 'Boa tarde'
+  }
+
+  return 'Boa noite'
 }
 
 const parseNode = (node: any): string => {
@@ -133,9 +148,12 @@ export const applyVariables = (text: string, contactName: string): string => {
   // Fallback inteligente para evitar mensagens quebradas quando o nome não existe.
   const safeName = sanitizeName(contactName)
   const fallback = safeName ?? 'cliente'
-  const variableRegex = new RegExp(`\\{\\{\\s*(${VARIABLE_TOKENS.join('|')})\\s*\\}\\}`, 'gi')
+  const greeting = getCurrentGreeting()
+  const nameRegex = new RegExp(`\\{\\{\\s*(${VARIABLE_TOKENS.join('|')})\\s*\\}\\}`, 'gi')
+  const greetingRegex = new RegExp(`\\{\\{\\s*(${GREETING_TOKENS.join('|')})\\s*\\}\\}`, 'gi')
 
-  return normalizeWhitespace(text.replace(variableRegex, fallback))
+  const withName = text.replace(nameRegex, fallback)
+  return normalizeWhitespace(withName.replace(greetingRegex, greeting))
 }
 
 export const parseMessagePayload = (payload: unknown): string => {

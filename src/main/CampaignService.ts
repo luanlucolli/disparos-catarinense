@@ -31,7 +31,7 @@ type CampaignState = {
   running: boolean
   paused: boolean
   cancelled: boolean
-  isShuttingDown?: boolean // Flag de segurança para evitar duplos logs no fechamento
+  isShuttingDown?: boolean
   sent: number
   success: number
   failed: number
@@ -146,8 +146,8 @@ export class CampaignService {
       void this.runSchedulerTick()
     }, SCHEDULER_INTERVAL_MS)
 
-    // O tick já roda processNextInQueue, então removemos a chamada redundante aqui.
     void this.runSchedulerTick()
+    void this.processNextInQueue()
   }
 
   hasPendingOrRunningCampaigns(): boolean {
@@ -167,7 +167,7 @@ export class CampaignService {
     )
 
     for (const runtime of activeCampaigns) {
-      runtime.isShuttingDown = true // Informa ao finally() para não agir duplamente
+      runtime.isShuttingDown = true 
       runtime.cancelled = true
       runtime.paused = false
       this.resolvePause(runtime)
@@ -307,7 +307,6 @@ export class CampaignService {
         log: `${nowTag()} ⏸️ Campanha pausada.`
       })
       
-      // CORREÇÃO: Se eu pausei esta, o motor ficou livre. Puxo imediatamente a próxima da fila!
       void this.processNextInQueue()
       return true
     }
@@ -484,6 +483,18 @@ export class CampaignService {
         return
       }
 
+      try {
+        const wppClient = this.dependencies.getClient()
+        if (wppClient) {
+          wppClient.sendPresenceAvailable().catch(() => {
+            // Ignora silenciosamente, envio de presença não pode travar a rede principal
+          })
+        }
+        await sleep(1500)
+      } catch (err) {
+        console.warn('[campaign] Aviso de presença falhou, continuando...', err)
+      }
+
       for (let index = 0; index < pendingContacts.length; index += 1) {
         const contact = pendingContacts[index]
 
@@ -564,8 +575,6 @@ export class CampaignService {
       this.resolvePause(runtime)
       this.campaigns.delete(runtime.campaignId)
 
-      // CORREÇÃO: Impede salvar no banco e emitir redundância se o evento
-      // foi disparado pela função cancelAllActiveCampaigns (app fechando).
       if (finalStatus && !runtime.isShuttingDown) {
         finishCampaign(runtime.campaignId, finalStatus, runtime.sent, runtime.success, runtime.failed)
         this.emit(runtime, {
@@ -678,21 +687,32 @@ export class CampaignService {
       }
     }
 
-    const formattedNumber = `${normalizedNumber}@c.us`
+    const targetId = `${normalizedNumber}@c.us`
+    let resolvedTargetId = targetId
 
     try {
-      const numberId = await client.getNumberId(formattedNumber)
-      const targetId = numberId?._serialized ?? formattedNumber
+      // 1. BLINDAGEM OTIMIZADA: Substituímos isRegisteredUser + getNumberId por apenas getNumberId.
+      // Isso corta as requisições na API da Meta pela METADE, reduzindo o comportamento de bot.
+      try {
+        const registrationProbeDelayMs = 500 + Math.floor(Math.random() * 1001)
+        await sleep(registrationProbeDelayMs)
 
-      if (!numberId) {
-        const errorLog = 'Não possui WhatsApp.'
-        updateCampaignContactStatus(contact.id, 'failed', errorLog)
-        return {
-          status: 'failed',
-          contactStatus: 'failed',
-          errorLog,
-          log: `${nowTag()} ❌ ${contact.name || 'Sem nome'} (${contact.number}): ${errorLog}`
+        const numberId = await client.getNumberId(targetId)
+        
+        if (!numberId || !numberId._serialized) {
+          const errorLog = 'Não possui WhatsApp.'
+          updateCampaignContactStatus(contact.id, 'failed', errorLog)
+          return {
+            status: 'failed',
+            contactStatus: 'failed',
+            errorLog,
+            log: `${nowTag()} ❌ ${contact.name || 'Sem nome'} (${contact.number}): ${errorLog}`
+          }
         }
+        
+        resolvedTargetId = numberId._serialized
+      } catch (valError) {
+        console.warn(`[campaign] Verificação de ID falhou, usando fallback direto para ${targetId}...`, safeMessage(valError))
       }
 
       const randomMessage = messages[Math.floor(Math.random() * messages.length)]
@@ -701,23 +721,25 @@ export class CampaignService {
 
       if (config.simulateTyping) {
         const typingDelay = this.calculateTypingDelay(finalMessage)
-        const shouldShowTyping = Math.random() > 0.3
+        try {
+          const chat = await client.getChatById(resolvedTargetId)
+          await chat.sendStateTyping()
+          await this.delayWithControls(runtime, typingDelay)
 
-        if (shouldShowTyping) {
           try {
-            const chat = await client.getChatById(targetId)
-            await chat.sendStateTyping()
-          } catch (typingError) {
-            console.warn('[campaign] Falha ao simular digitação:', typingError)
+            await chat.clearState()
+          } catch (clearError) {
+            console.warn('[campaign] Falha ao limpar estado de digitação:', clearError)
           }
+        } catch (typingError) {
+          console.warn('[campaign] Falha ao simular digitação (chat inexistente na memória local):', typingError)
+          await this.delayWithControls(runtime, typingDelay)
         }
-
-        await this.delayWithControls(runtime, typingDelay)
       }
 
-      await client.sendMessage(targetId, finalMessage, {
-        linkPreview: false, 
-        waitUntilMsgSent: true
+      // ENVIO PURO SEM TRAVAR O NODE.JS (sem waitUntilMsgSent)
+      await client.sendMessage(resolvedTargetId, finalMessage, {
+        linkPreview: false
       })
 
       updateCampaignContactStatus(contact.id, 'success', null)
@@ -853,7 +875,7 @@ export class CampaignService {
     let remainingMs = Math.max(0, totalMs)
 
     while (remainingMs > 0) {
-      if (runtime.cancelled || runtime.isShuttingDown) return // Previne travamento no fechamento
+      if (runtime.cancelled || runtime.isShuttingDown) return
       await this.waitIfPaused(runtime)
       if (runtime.cancelled || runtime.isShuttingDown) return
 
@@ -900,11 +922,19 @@ export class CampaignService {
       return null
     }
 
-    const withCountryCode = digits.startsWith('55') ? digits : `55${digits}`
-    return withCountryCode
+    // Se tem 10 ou 11 dígitos, tratamos como BR sem o DDI
+    if (digits.length === 10 || digits.length === 11) {
+      return `55${digits}`
+    }
+
+    // Se já tem 12 ou mais, aceita do jeito que veio
+    return digits
   }
 
   private calculateTypingDelay(message: string): number {
-    return Math.max(1500, Math.min(12000, message.length * 50))
+    const baseDelay = Math.max(1500, Math.min(12000, message.length * 50))
+    const varianceFactor = 1 + (Math.random() * 0.2 - 0.1)
+    const variedDelay = Math.round(baseDelay * varianceFactor)
+    return Math.max(1500, Math.min(12000, variedDelay))
   }
 }

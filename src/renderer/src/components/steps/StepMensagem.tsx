@@ -12,6 +12,7 @@ import {
   Plus,
   RefreshCw,
   LogOut,
+  Sun,
   AlertTriangle,
   X,
   FolderOpen,
@@ -154,6 +155,19 @@ export default function StepMensagem({ onNext, onBack, templates }: Props) {
       .focus()
       .insertContent([
         { type: "variable", attrs: { name: "nome_do_cliente" } },
+        { type: "text", text: " " },
+      ])
+      .run();
+  };
+
+  const insertGreetingVariable = () => {
+    if (!editor) return;
+
+    editor
+      .chain()
+      .focus()
+      .insertContent([
+        { type: "variable", attrs: { name: "saudacao" } },
         { type: "text", text: " " },
       ])
       .run();
@@ -350,6 +364,10 @@ export default function StepMensagem({ onNext, onBack, templates }: Props) {
                 onClick={openNewSpintaxModal}
               >
                 <Sparkles className="w-4 h-4" /> Palavras Alternativas
+              </Button>
+
+              <Button variant="outline" size="sm" className="gap-1.5" onClick={insertGreetingVariable}>
+                <Sun className="w-4 h-4" /> Saudação Automática
               </Button>
 
               <Button variant="outline" size="sm" className="gap-1.5" onClick={insertOptOut}>
