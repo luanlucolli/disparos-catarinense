@@ -24,6 +24,50 @@ const normalizeWhitespace = (value: string): string => {
     .trim()
 }
 
+const formatHumanizedName = (fullName: string): string => {
+  const parts = fullName.trim().split(/\s+/).filter(Boolean)
+  if (parts.length === 0) return ''
+
+  const commonCompoundFirstNames = new Set([
+    'maria',
+    'ana',
+    'joao',
+    'joão',
+    'pedro',
+    'carlos',
+    'paulo',
+    'luiz',
+    'luis',
+    'jose',
+    'josé',
+    'julio',
+    'júlio'
+  ])
+
+  const prepositions = new Set(['da', 'de', 'do'])
+  const firstLower = parts[0].toLocaleLowerCase('pt-BR')
+  const selectedTokens =
+    parts.length > 1 && commonCompoundFirstNames.has(firstLower) ? [parts[0], parts[1]] : [parts[0]]
+
+  return selectedTokens
+    .map((token, index) => {
+      const lower = token.toLocaleLowerCase('pt-BR')
+
+      if (index > 0 && prepositions.has(lower)) {
+        return lower
+      }
+
+      const chars = Array.from(lower)
+      if (chars.length === 0) {
+        return ''
+      }
+
+      const [firstChar, ...restChars] = chars
+      return `${firstChar.toLocaleUpperCase('pt-BR')}${restChars.join('')}`
+    })
+    .join(' ')
+}
+
 const sanitizeName = (contactName: string | null | undefined): string | null => {
   if (typeof contactName !== 'string') {
     return null
@@ -43,7 +87,7 @@ const sanitizeName = (contactName: string | null | undefined): string | null => 
     return null
   }
 
-  return sanitized
+  return formatHumanizedName(sanitized)
 }
 
 const getCurrentGreeting = (): string => {
@@ -145,7 +189,6 @@ export const applyVariables = (text: string, contactName: string): string => {
     return ''
   }
 
-  // Fallback inteligente para evitar mensagens quebradas quando o nome não existe.
   const safeName = sanitizeName(contactName)
   const fallback = safeName ?? 'cliente'
   const greeting = getCurrentGreeting()
