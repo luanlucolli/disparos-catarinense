@@ -455,6 +455,7 @@ export class CampaignService {
           log: `${nowTag()} ❌ Erro ao iniciar campanha da fila: ${errorMessage}`,
           finishedAt: new Date().toISOString()
         })
+        await sleep(1000)
       }
     }
 
@@ -482,6 +483,8 @@ export class CampaignService {
         finalLog = `${nowTag()} ✅ Nenhum contato pendente. Campanha concluída.`
         return
       }
+
+      await sleep(3000 + Math.random() * 4000)
 
       try {
         const wppClient = this.dependencies.getClient()
